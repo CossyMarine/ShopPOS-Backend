@@ -41,4 +41,19 @@ export const uploadNotificationSound = multer({
   limits: { fileSize: 8 * 1024 * 1024 }, // 8MB — plenty for a short alert clip
 });
 
+// ── Product image storage (Supermarket) ─────────────────────────
+const productImageStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder:          "shoppos/products",
+    allowed_formats:  ["jpg", "jpeg", "png", "webp"],
+    transformation:   [{ width: 800, height: 800, crop: "limit" }],
+  },
+});
+
+export const uploadProductImage = multer({
+  storage: productImageStorage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+});
+
 export { cloudinary };
