@@ -2,22 +2,16 @@
 import Receipt from "../../models/Receipt.js";
 import { getKenyanDayBounds } from "../../utils/dateHelpers.js";
 
-// Online orders that no waiter has claimed yet shouldn't clutter the
-// normal admin tabs — they live in the "Pending Online" tab instead
-// until a waiter (or admin) assigns themselves via /orders/:id/assign.
-const excludeUnclaimedOnline = {
-  $or: [{ source: { $ne: "online" } }, { waiterName: { $ne: null } }],
-};
-
-// @desc    Get all unpaid or partially-paid receipts
-// @route   GET /api/receipts
-// @access  Protected — admin
+// @desc    Get all unpaid or partially-paid receipts for a branch
+//          (Super Admin can omit ?branch= to see every branch)
+// @route   GET /api/receipts?branch=
+// @access  Protected — cashier, branchManager, admin (auto-scoped via sameBranch)
 export const getReceipts = async (req, res) => {
   try {
-    const receipts = await Receipt.find({
-      status: { $in: ["unpaid", "partial"] },
-      ...excludeUnclaimedOnline,
-    }).sort({ createdAt: -1 });
+    const filter = { status: { $in: ["unpaid", "partial"] } };
+    if (req.query.branch) filter.branch = req.query.branch;
+
+    const receipts = await Receipt.find(filter).sort({ createdAt: -1 });
     res.json(receipts);
   } catch (error) {
     console.error("Error fetching receipts:", error.message);
@@ -25,15 +19,15 @@ export const getReceipts = async (req, res) => {
   }
 };
 
-// @desc    Get paid receipts (most recent first) — accountant view
-// @route   GET /api/receipts/paid
-// @access  Protected — admin, accountant
+// @desc    Get paid receipts (most recent first) — branchManager/admin view
+// @route   GET /api/receipts/paid?branch=
+// @access  Protected — branchManager, admin
 export const getPaidReceipts = async (req, res) => {
   try {
-    const receipts = await Receipt.find({
-      status: "paid",
-      ...excludeUnclaimedOnline,
-    }).sort({ paidAt: -1 }).limit(200);
+    const filter = { status: "paid" };
+    if (req.query.branch) filter.branch = req.query.branch;
+
+    const receipts = await Receipt.find(filter).sort({ paidAt: -1 }).limit(200);
     res.json(receipts);
   } catch (error) {
     console.error("Error fetching paid receipts:", error.message);
@@ -41,15 +35,17 @@ export const getPaidReceipts = async (req, res) => {
   }
 };
 
-// @desc    Online orders placed by customers that no waiter has claimed yet
-// @route   GET /api/receipts/online-pending
-// @access  Protected — admin
+// @desc    Bills placed via the Customer Portal, unpaid — the "Online Bills"
+//          tab. No claiming step needed: any cashier at the branch can act
+//          on it, unlike the restaurant's per-waiter assignment flow.
+// @route   GET /api/receipts/online-pending?branch=
+// @access  Protected — cashier, branchManager, admin
 export const getPendingOnlineReceipts = async (req, res) => {
   try {
-    const receipts = await Receipt.find({
-      source: "online",
-      waiterName: null,
-    }).sort({ createdAt: 1 });
+    const filter = { source: "online", status: { $in: ["unpaid", "partial"] } };
+    if (req.query.branch) filter.branch = req.query.branch;
+
+    const receipts = await Receipt.find(filter).sort({ createdAt: 1 });
     res.json(receipts);
   } catch (error) {
     console.error("Error fetching pending online receipts:", error.message);
@@ -58,19 +54,20 @@ export const getPendingOnlineReceipts = async (req, res) => {
 };
 
 // @desc    Today's paid vs unpaid totals — powers the "All" tab summary bar
-// @route   GET /api/receipts/summary/today
-// @access  Protected — admin, accountant
+// @route   GET /api/receipts/summary/today?branch=
+// @access  Protected — cashier, branchManager, admin
 export const getReceiptsTodaySummary = async (req, res) => {
   try {
     const { start: startOfDay, end: endOfDay } = getKenyanDayBounds();
+    const branchMatch = req.query.branch ? { branch: req.query.branch } : {};
 
     const [paidAgg, unpaidAgg] = await Promise.all([
       Receipt.aggregate([
-        { $match: { status: "paid", paidAt: { $gte: startOfDay, $lte: endOfDay } } },
+        { $match: { status: "paid", paidAt: { $gte: startOfDay, $lte: endOfDay }, ...branchMatch } },
         { $group: { _id: null, total: { $sum: "$subtotal" }, count: { $sum: 1 } } },
       ]),
       Receipt.aggregate([
-        { $match: { status: { $in: ["unpaid", "partial"] }, createdAt: { $gte: startOfDay, $lte: endOfDay } } },
+        { $match: { status: { $in: ["unpaid", "partial"] }, createdAt: { $gte: startOfDay, $lte: endOfDay }, ...branchMatch } },
         { $group: { _id: null, total: { $sum: "$subtotal" }, count: { $sum: 1 } } },
       ]),
     ]);
@@ -87,18 +84,18 @@ export const getReceiptsTodaySummary = async (req, res) => {
   }
 };
 
-// @desc    Get unpaid/partial receipts for a specific waiter
-// @route   GET /api/receipts/waiter/:name
+// @desc    Get unpaid/partial receipts for a specific cashier
+// @route   GET /api/receipts/cashier/:name
 // @access  Protected
-export const getReceiptsByWaiter = async (req, res) => {
+export const getReceiptsByCashier = async (req, res) => {
   try {
     const { name } = req.params;
-    const receipts = await Receipt.find({ waiterName: name, status: { $in: ["unpaid", "partial"] } }).sort({
+    const receipts = await Receipt.find({ cashierName: name, status: { $in: ["unpaid", "partial"] } }).sort({
       createdAt: -1,
     });
     res.json(receipts);
   } catch (error) {
-    console.error("Error fetching receipts by waiter:", error.message);
+    console.error("Error fetching receipts by cashier:", error.message);
     res.status(500).json({ message: "Failed to fetch receipts" });
   }
 };
@@ -111,7 +108,8 @@ export const getReceiptById = async (req, res) => {
     const receipt = await Receipt.findById(req.params.id)
       .populate("payments.paidBy", "fullName email phone isAdmin role")
       .populate("pendingManualPayments.paidBy", "fullName email phone isAdmin role")
-      .populate("customer", "fullName email phone role");
+      .populate("customer", "fullName email phone role")
+      .populate("branch", "name");
     if (!receipt) return res.status(404).json({ message: "Receipt not found" });
     res.json(receipt);
   } catch (error) {
@@ -120,26 +118,25 @@ export const getReceiptById = async (req, res) => {
   }
 };
 
-// @desc    Paginated bill history across ALL waiters, every status, newest first.
-// @route   GET /api/receipts/history?page=1&limit=10&q=search&from=ISO&to=ISO
+// @desc    Paginated bill history — every status, newest first. Branch-
+//          scoped for staff, or filterable by ?branch= for Super Admin's
+//          cross-branch view.
+// @route   GET /api/receipts/history?page=1&limit=10&q=search&from=ISO&to=ISO&branch=
 // @access  Protected
 export const getReceiptHistory = async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.max(1, parseInt(req.query.limit) || 10);
     const q = (req.query.q || "").trim();
-    const { from, to } = req.query;
+    const { from, to, branch } = req.query;
 
     const filter = {};
+    if (branch) filter.branch = branch;
     if (q) {
-      const orClauses = [
+      filter.$or = [
         { billId: { $regex: q, $options: "i" } },
-        { waiterName: { $regex: q, $options: "i" } },
+        { cashierName: { $regex: q, $options: "i" } },
       ];
-      orClauses.push(
-        isNaN(q) ? { tableNumber: { $regex: q, $options: "i" } } : { tableNumber: q }
-      );
-      filter.$or = orClauses;
     }
     if (from || to) {
       // Both bounds are anchored to the Kenyan calendar day the picker value
@@ -168,10 +165,10 @@ export const getReceiptHistory = async (req, res) => {
   }
 };
 
-// @desc    Paginated bill history for one waiter, every status, newest first
-// @route   GET /api/receipts/waiter/:name/history?page=1&limit=4&q=search&from=ISO&to=ISO
+// @desc    Paginated bill history for one cashier, every status, newest first
+// @route   GET /api/receipts/cashier/:name/history?page=1&limit=4&q=search&from=ISO&to=ISO
 // @access  Protected
-export const getReceiptHistoryByWaiter = async (req, res) => {
+export const getReceiptHistoryByCashier = async (req, res) => {
   try {
     const { name } = req.params;
     const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -179,13 +176,9 @@ export const getReceiptHistoryByWaiter = async (req, res) => {
     const q = (req.query.q || "").trim();
     const { from, to } = req.query;
 
-    const filter = { waiterName: name };
+    const filter = { cashierName: name };
     if (q) {
-      const orClauses = [{ billId: { $regex: q, $options: "i" } }];
-      orClauses.push(
-        isNaN(q) ? { tableNumber: { $regex: q, $options: "i" } } : { tableNumber: q }
-      );
-      filter.$or = orClauses;
+      filter.$or = [{ billId: { $regex: q, $options: "i" } }];
     }
     if (from || to) {
       // Same Kenya-day anchoring as getReceiptHistory above.
