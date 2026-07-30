@@ -33,11 +33,13 @@ const userSchema = new mongoose.Schema(
     // Only meaningful when isAdmin is false.
     role: {
       type: String,
-      enum: ["kitchen", "waiter", "accountant", "customer"],
+      enum: ["cashier", "storekeeper", "branchManager", "customer"],
       default: "customer",
     },
 
     isActive: { type: Boolean, default: true },
+
+    branch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch", default: null }, 
 
         // ---- Granular module access (role: "accountant" only) ----
     // Payments, Orders & Receipts, and Void Requests are visible by default —
