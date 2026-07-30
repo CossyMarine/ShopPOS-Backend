@@ -6,9 +6,8 @@ import VoidRequest from "../models/VoidRequest.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
 
-// @desc    Open a shift for the logged-in user. Each staff member (accountant,
-//          waiter, etc.) has their own shift now — the uniqueness check is
-//          scoped per-user, not restaurant-wide.
+// @desc    Open a shift for the logged-in user. Each cashier has their own
+//          shift — the uniqueness check is scoped per-user, not branch-wide.
 // @route   POST /api/shifts/open
 // @access  Protected
 export const openShift = async (req, res) => {
@@ -18,6 +17,9 @@ export const openShift = async (req, res) => {
   if (openingFloat === undefined || openingFloat === null || isNaN(openingFloat)) {
     return res.status(400).json({ message: "openingFloat is required and must be a number" });
   }
+  if (!req.user.branch) {
+    return res.status(400).json({ message: "Your account has no assigned branch" });
+  }
 
   try {
     const existing = await Shift.findOne({ openedBy, status: "open" });
@@ -25,10 +27,10 @@ export const openShift = async (req, res) => {
       return res.status(400).json({ message: "You already have a shift open", shift: existing });
     }
 
-    const shift = await Shift.create({ openedBy, openingFloat });
+    const shift = await Shift.create({ openedBy, openingFloat, branch: req.user.branch });
 
     const io = req.app.get("io");
-    io.emit("shift:opened", shift);
+    io.to(`branch:${shift.branch}`).emit("shift:opened", shift);
 
     res.status(201).json(shift);
   } catch (error) {
@@ -51,7 +53,7 @@ export const getCurrentShift = async (req, res) => {
 };
 
 // @desc    Log a petty cash out-payment against an open shift (must be yours, unless admin
-//          or a shared waiter-station login acting on a named waiter's shift)
+//          or a shared cashier-station login acting on a named cashier's shift)
 // @route   POST /api/shifts/:id/petty-cash
 // @access  Protected
 export const addPettyCash = async (req, res) => {
@@ -69,7 +71,7 @@ export const addPettyCash = async (req, res) => {
   try {
     const shift = await Shift.findById(id);
     if (!shift) return res.status(404).json({ message: "Shift not found" });
-    if (!req.user.isAdmin && req.user.role !== "waiter" && String(shift.openedBy) !== String(req.user._id)) {
+    if (!req.user.isAdmin && req.user.role !== "cashier" && String(shift.openedBy) !== String(req.user._id)) {
       return res.status(403).json({ message: "This isn't your shift" });
     }
     if (shift.status !== "open") {
@@ -79,7 +81,7 @@ export const addPettyCash = async (req, res) => {
     const entry = await PettyCash.create({ shift: id, amount, reason: reason.trim(), loggedBy });
 
     const io = req.app.get("io");
-    io.emit("shift:pettyCashAdded", entry);
+    io.to(`branch:${shift.branch}`).emit("shift:pettyCashAdded", entry);
 
     res.status(201).json(entry);
   } catch (error) {
@@ -88,13 +90,9 @@ export const addPettyCash = async (req, res) => {
   }
 };
 
-// Shared calculation used by preview + real close. Now aggregates straight
-// from each receipt's `payments[]` array (grouped by method) instead of
-// only reading cashAmount/tillAmount — so it correctly reflects cash, till,
-// M-Pesa prompt AND reward payments processed under this shift.
-//
-// Also now reports ordersCount and voidCount so the close-shift summary
-// modal can show "today's orders" and "today's void" alongside the sale total.
+// Shared calculation used by preview + real close. Aggregates straight from
+// each receipt's `payments[]` array (grouped by method) so it correctly
+// reflects cash, till, M-Pesa prompt AND reward payments under this shift.
 const computeShiftSummary = async (shiftId) => {
   const shift = await Shift.findById(shiftId).populate("openedBy", "fullName").populate("closedBy", "fullName");
   if (!shift) return null;
@@ -124,14 +122,12 @@ const computeShiftSummary = async (shiftId) => {
     receipt: { $in: shiftReceiptIds },
   });
 
-  // Order count for this shift's waiter, scoped to the shift's open window —
-  // falls back to 0 when the shift wasn't opened against a named waiter.
-  const ordersCount = shift.openedBy?.fullName
-    ? await Order.countDocuments({
-        waiterName: shift.openedBy.fullName,
-        createdAt: { $gte: shift.createdAt, ...(shift.closedAt ? { $lte: shift.closedAt } : {}) },
-      })
-    : 0;
+  // Sale count for this shift's cashier, scoped to the shift's open window.
+  // Order.cashier is a direct ObjectId now — no name matching needed.
+  const ordersCount = await Order.countDocuments({
+    cashier: shift.openedBy._id,
+    createdAt: { $gte: shift.createdAt, ...(shift.closedAt ? { $lte: shift.closedAt } : {}) },
+  });
 
   const expectedCash = shift.openingFloat + totals.cash - pettyCashOut;
   const grandTotal = totals.cash + totals.till + totals.prompt + totals.reward;
@@ -140,6 +136,7 @@ const computeShiftSummary = async (shiftId) => {
   return {
     shiftId: shift._id,
     status: shift.status,
+    branch: shift.branch,
     openedBy: shift.openedBy,
     openedAt: shift.createdAt,
     closedBy: shift.closedBy,
@@ -150,12 +147,11 @@ const computeShiftSummary = async (shiftId) => {
     promptSales: totals.prompt,
     rewardSales: totals.reward,
     voidedTotal,
-    voidCount,       // NEW — "today's void 2"
-    ordersCount,      // NEW — "today's orders 70"
+    voidCount,       // "today's void 2"
+    ordersCount,      // "today's sales count"
     pettyCashOut,
     expectedCash,
     grandTotal,       // "today's sale 10,000"
-    tipsDeclared: shift.tipsDeclared || 0,
     closingCashCount: shift.closingCashCount,
     variance,
     pendingVoidRequests,
@@ -163,7 +159,7 @@ const computeShiftSummary = async (shiftId) => {
 };
 
 // @desc    Preview a shift's totals without closing it (must be yours, unless admin
-//          or a shared waiter-station login)
+//          or a shared cashier-station login)
 // @route   GET /api/shifts/:id/summary
 // @access  Protected
 export const getShiftSummary = async (req, res) => {
@@ -171,7 +167,7 @@ export const getShiftSummary = async (req, res) => {
   try {
     const shift = await Shift.findById(id);
     if (!shift) return res.status(404).json({ message: "Shift not found" });
-    if (!req.user.isAdmin && req.user.role !== "waiter" && String(shift.openedBy) !== String(req.user._id)) {
+    if (!req.user.isAdmin && req.user.role !== "cashier" && String(shift.openedBy) !== String(req.user._id)) {
       return res.status(403).json({ message: "This isn't your shift" });
     }
     const summary = await computeShiftSummary(id);
@@ -182,13 +178,13 @@ export const getShiftSummary = async (req, res) => {
   }
 };
 
-// @desc    Close a shift (must be yours, unless admin, or a shared waiter-station
-//          login closing a named waiter's shift)
+// @desc    Close a shift (must be yours, unless admin, or a shared cashier-station
+//          login closing a named cashier's shift)
 // @route   POST /api/shifts/:id/close
 // @access  Protected
 export const closeShift = async (req, res) => {
   const { id } = req.params;
-  const { closingCashCount, tipsDeclared, notes } = req.body;
+  const { closingCashCount, notes } = req.body;
   const closedBy = req.user._id;
 
   if (closingCashCount === undefined || closingCashCount === null || isNaN(closingCashCount)) {
@@ -198,7 +194,7 @@ export const closeShift = async (req, res) => {
   try {
     const shift = await Shift.findById(id);
     if (!shift) return res.status(404).json({ message: "Shift not found" });
-    if (!req.user.isAdmin && req.user.role !== "waiter" && String(shift.openedBy) !== String(req.user._id)) {
+    if (!req.user.isAdmin && req.user.role !== "cashier" && String(shift.openedBy) !== String(req.user._id)) {
       return res.status(403).json({ message: "This isn't your shift" });
     }
     if (shift.status !== "open") {
@@ -206,7 +202,6 @@ export const closeShift = async (req, res) => {
     }
 
     shift.closingCashCount = closingCashCount;
-    shift.tipsDeclared = tipsDeclared || 0;
     shift.notes = notes || null;
     shift.closedBy = closedBy;
     shift.closedAt = new Date();
@@ -216,7 +211,7 @@ export const closeShift = async (req, res) => {
     const summary = await computeShiftSummary(id);
 
     const io = req.app.get("io");
-    io.emit("shift:closed", summary);
+    io.to(`branch:${shift.branch}`).emit("shift:closed", summary);
 
     res.json(summary);
   } catch (error) {
@@ -225,9 +220,9 @@ export const closeShift = async (req, res) => {
   }
 };
 
-// @desc    Admin — shift history for one accountant, filterable by date
+// @desc    Admin/branchManager — shift history for one cashier, filterable by date
 // @route   GET /api/shifts/history/:userId?from=&to=
-// @access  Protected — admin
+// @access  Protected — admin, branchManager
 export const getShiftHistory = async (req, res) => {
   const { userId } = req.params;
   const { from, to } = req.query;
@@ -245,14 +240,13 @@ export const getShiftHistory = async (req, res) => {
   }
 };
 
-// @desc    Open a shift on behalf of a specific named waiter — used by the
-//          Waiter Settings tab on a shared station login, where the account
-//          logged in isn't the individual waiter but the staff picks who
-//          they are from a dropdown.
-// @route   POST /api/shifts/waiter/:waiterId/open
-// @access  Protected — waiter (station) or admin
-export const openShiftForWaiter = async (req, res) => {
-  const { waiterId } = req.params;
+// @desc    Open a shift on behalf of a specific named cashier — used on a
+//          shared register login, where the account logged in isn't the
+//          individual cashier but the staff picks who they are from a dropdown.
+// @route   POST /api/shifts/cashier/:cashierId/open
+// @access  Protected — cashier (station), branchManager, or admin
+export const openShiftForCashier = async (req, res) => {
+  const { cashierId } = req.params;
   const { openingFloat } = req.body;
 
   if (openingFloat === undefined || openingFloat === null || isNaN(openingFloat)) {
@@ -260,38 +254,39 @@ export const openShiftForWaiter = async (req, res) => {
   }
 
   try {
-    const waiter = await User.findOne({ _id: waiterId, role: "waiter" });
-    if (!waiter) return res.status(404).json({ message: "Waiter not found" });
+    const cashier = await User.findOne({ _id: cashierId, role: "cashier" });
+    if (!cashier) return res.status(404).json({ message: "Cashier not found" });
+    if (!cashier.branch) return res.status(400).json({ message: "This cashier has no assigned branch" });
 
-    const existing = await Shift.findOne({ openedBy: waiterId, status: "open" });
+    const existing = await Shift.findOne({ openedBy: cashierId, status: "open" });
     if (existing) {
-      return res.status(400).json({ message: `${waiter.fullName} already has a shift open`, shift: existing });
+      return res.status(400).json({ message: `${cashier.fullName} already has a shift open`, shift: existing });
     }
 
-    const shift = await Shift.create({ openedBy: waiterId, openingFloat });
+    const shift = await Shift.create({ openedBy: cashierId, openingFloat, branch: cashier.branch });
 
     const io = req.app.get("io");
-    io.emit("shift:opened", shift);
+    io.to(`branch:${shift.branch}`).emit("shift:opened", shift);
 
     res.status(201).json(shift);
   } catch (error) {
-    console.error("Error opening waiter shift:", error.message);
+    console.error("Error opening cashier shift:", error.message);
     res.status(500).json({ message: "Failed to open shift", error: error.message });
   }
 };
 
-// @desc    Current open-shift status for a specific named waiter — since the
-//          logged-in account on a shared station isn't the waiter themselves,
+// @desc    Current open-shift status for a specific named cashier — since the
+//          logged-in account on a shared station isn't the cashier themselves,
 //          /api/shifts/current (which reads req.user._id) can't answer this.
-// @route   GET /api/shifts/waiter/:waiterId/status
-// @access  Protected — waiter (station) or admin
-export const getShiftStatusForWaiter = async (req, res) => {
-  const { waiterId } = req.params;
+// @route   GET /api/shifts/cashier/:cashierId/status
+// @access  Protected — cashier (station), branchManager, or admin
+export const getShiftStatusForCashier = async (req, res) => {
+  const { cashierId } = req.params;
   try {
-    const shift = await Shift.findOne({ openedBy: waiterId, status: "open" });
+    const shift = await Shift.findOne({ openedBy: cashierId, status: "open" });
     res.json(shift);
   } catch (error) {
-    console.error("Error fetching waiter shift status:", error.message);
+    console.error("Error fetching cashier shift status:", error.message);
     res.status(500).json({ message: "Failed to fetch shift status", error: error.message });
   }
 };
