@@ -17,10 +17,10 @@ export {
   getPaidReceipts,
   getPendingOnlineReceipts,
   getReceiptsTodaySummary,
-  getReceiptsByWaiter,
+  getReceiptsByCashier,
   getReceiptById,
   getReceiptHistory,
-  getReceiptHistoryByWaiter,
+  getReceiptHistoryByCashier,
 } from "./receipt/receiptQueries.js";
 
 export { addItemsToReceipt, markReceiptPrinted } from "./receipt/receiptManagement.js";
@@ -31,7 +31,7 @@ export { addItemsToReceipt, markReceiptPrinted } from "./receipt/receiptManageme
 
 // @desc    Pay a receipt with cash. Change is never allowed to be negative.
 // @route   PATCH /api/receipts/:id/pay
-// @access  Protected — admin
+// @access  Protected — cashier, branchManager, admin
 export const payReceipt = async (req, res) => {
   const { id } = req.params;
   const { amountPaid } = req.body;
@@ -76,7 +76,7 @@ export const payReceipt = async (req, res) => {
     await Order.findByIdAndUpdate(receipt.order, { status: "completed" });
 
     const io = req.app.get("io");
-    io.emit("receipt:paid", receipt);
+    io.to(`branch:${receipt.branch}`).emit("receipt:paid", receipt);
 
     res.json({ message: "Payment successful", receipt });
   } catch (error) {
@@ -121,8 +121,8 @@ const finalizeMpesaSuccess = async ({ receipt, mpesaReceiptNumber, io }) => {
 
   await Order.findByIdAndUpdate(receipt.order, { status: "completed" });
 
-  io.emit("receipt:paid", receipt);
-  io.emit("mpesa:result", {
+  io.to(`branch:${receipt.branch}`).emit("receipt:paid", receipt);
+  io.to(`branch:${receipt.branch}`).emit("mpesa:result", {
     checkoutRequestId: receipt.mpesaCheckoutRequestId,
     status: "success",
     receipt,
@@ -150,7 +150,7 @@ const finalizeWalletMpesaSuccess = async ({ receipt, mpesaReceiptNumber, io }) =
     io,
   });
 
-  io.emit("mpesa:result", {
+  io.to(`branch:${updated.branch}`).emit("mpesa:result", {
     checkoutRequestId: updated.mpesaCheckoutRequestId,
     status: "success",
     receipt: updated,
@@ -162,7 +162,7 @@ const finalizeMpesaFailure = async ({ receipt, resultDesc, io }) => {
   receipt.mpesaResultDesc = resultDesc || "Payment was not completed";
   await receipt.save();
 
-  io.emit("mpesa:result", {
+  io.to(`branch:${receipt.branch}`).emit("mpesa:result", {
     checkoutRequestId: receipt.mpesaCheckoutRequestId,
     status: "failed",
     message: receipt.mpesaResultDesc,
@@ -172,7 +172,7 @@ const finalizeMpesaFailure = async ({ receipt, resultDesc, io }) => {
 // @desc    Trigger an STK push ("Prompt"). cashAmount = 0 for prompt-only, or
 //          a partial amount for a split "both" payment (prompt covers the rest).
 // @route   POST /api/receipts/:id/mpesa/initiate
-// @access  Protected — admin
+// @access  Protected — cashier, branchManager, admin
 export const initiateMpesaPayment = async (req, res) => {
   const { id } = req.params;
   let { phone, cashAmount } = req.body;
@@ -226,7 +226,7 @@ export const initiateMpesaPayment = async (req, res) => {
     await receipt.save();
 
     const io = req.app.get("io");
-    io.emit("receipt:mpesaPending", receipt);
+    io.to(`branch:${receipt.branch}`).emit("receipt:mpesaPending", receipt);
 
     res.json({
       message: "STK push sent. Ask the customer to enter their M-Pesa PIN.",
@@ -286,7 +286,7 @@ export const mpesaCallback = async (req, res) => {
 // @desc    Poll payment status. Also actively queries Daraja, so payment
 //          still completes even if the callback URL can't be reached.
 // @route   GET /api/receipts/:id/mpesa/status
-// @access  Protected — admin
+// @access  Protected — cashier, branchManager, admin
 export const getMpesaStatus = async (req, res) => {
   try {
     const receipt = await Receipt.findById(req.params.id);
@@ -330,7 +330,7 @@ export const getMpesaStatus = async (req, res) => {
 
 // @desc    Cancel a pending STK push so the cashier can retry or switch method
 // @route   POST /api/receipts/:id/mpesa/cancel
-// @access  Protected — admin
+// @access  Protected — cashier, branchManager, admin
 export const cancelMpesaPayment = async (req, res) => {
   try {
     const receipt = await Receipt.findById(req.params.id);
@@ -358,7 +358,7 @@ export const cancelMpesaPayment = async (req, res) => {
 //          code / customer name is collected (that's only required on the
 //          customer-facing wallet self-pay flow).
 // @route   PATCH /api/receipts/:id/pay/cash-till
-// @access  Protected — admin
+// @access  Protected — cashier, branchManager, admin
 export const payCashAndTill = async (req, res) => {
   const { id } = req.params;
   let { cashAmount } = req.body;
@@ -406,7 +406,7 @@ export const payCashAndTill = async (req, res) => {
     await Order.findByIdAndUpdate(receipt.order, { status: "completed" });
 
     const io = req.app.get("io");
-    io.emit("receipt:paid", receipt);
+    io.to(`branch:${receipt.branch}`).emit("receipt:paid", receipt);
 
     res.json({ message: "Payment successful", receipt });
   } catch (error) {
@@ -420,11 +420,12 @@ export const payCashAndTill = async (req, res) => {
 // ============================================================
 
 // @desc    Apply any mix of cash, manual-till, and a customer's reward
-//          points to a bill in a single call. Any leftover balance (e.g.
-//          the rest is going on M-Pesa prompt) is left due — call
-//          POST /:id/mpesa/initiate next for that remainder.
+//          points to a bill in a single call — this is the "always ask if
+//          that user should be rewarded" flow at checkout. Any leftover
+//          balance (e.g. the rest is going on M-Pesa prompt) is left due —
+//          call POST /:id/mpesa/initiate next for that remainder.
 // @route   PATCH /api/receipts/:id/pay/combo
-// @access  Protected — admin, accountant (payments permission + open shift)
+// @access  Protected — cashier, branchManager, admin (open shift required)
 export const payCombo = async (req, res) => {
   const { id } = req.params;
   let { cashAmount, tillAmount, rewardIdentifier, rewardAmount } = req.body;
@@ -504,8 +505,8 @@ export const payCombo = async (req, res) => {
     }
 
     if (io) {
-      io.emit("receipt:updated", receipt);
-      if (receipt.status === "paid") io.emit("receipt:paid", receipt);
+      io.to(`branch:${receipt.branch}`).emit("receipt:updated", receipt);
+      if (receipt.status === "paid") io.to(`branch:${receipt.branch}`).emit("receipt:paid", receipt);
     }
 
     const balanceRemaining = Number((receipt.subtotal - (receipt.amountPaid || 0)).toFixed(2));
