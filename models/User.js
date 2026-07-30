@@ -23,7 +23,7 @@ const userSchema = new mongoose.Schema(
     },
     password: { type: String, required: true }, // bcrypt hash
 
-    // Marine-style flag — true = full-access staff (was admin/manager/cashier).
+    // true = Super Admin — full access across every branch.
     // isAdmin: true always routes to /admin regardless of `role`.
     isAdmin: {
       type: Boolean,
@@ -39,52 +39,25 @@ const userSchema = new mongoose.Schema(
 
     isActive: { type: Boolean, default: true },
 
-    branch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch", default: null }, 
-
-        // ---- Granular module access (role: "accountant" only) ----
-    // Payments, Orders & Receipts, and Void Requests are visible by default —
-    // they're the core of the accountant job. Everything else is hidden
-    // until an admin explicitly grants it from Accountant Management.
-    permissions: {
-      inventory: { type: Boolean, default: false },
-      manageMenu: { type: Boolean, default: false },
-      ordersReceipts: { type: Boolean, default: true },
-      voidRequests: { type: Boolean, default: true },
-      users: { type: Boolean, default: false },
-      settings: { type: Boolean, default: false },
-      waiterManagement: { type: Boolean, default: false },
-      kitchen: { type: Boolean, default: false },
-      payments: { type: Boolean, default: true },
-    },
+    // Null for Super Admin (sees every branch) and for customers.
+    // Required in practice for cashier/storekeeper/branchManager.
+    branch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch", default: null },
 
     // Reward/cashback points balance — only meaningful for role: "customer"
     walletPoints: { type: Number, default: 0 },
 
-    // ---- Waiter management metadata (role: "waiter" only) ----
-    // When/how this user became a waiter.
-    waiterSince: { type: Date },
-    waiterSource: { type: String, enum: ["direct", "promoted"], default: "direct" },
-
-    // Global kill-switch — true = never appears in ANYONE's waiter dropdown.
-    // Set automatically when a waiter is "dropped" via admin management.
-    hiddenFromSelector: { type: Boolean, default: false },
+    // Wishlist — Customer Portal "Favorites" tab
+    favorites: [{ type: mongoose.Schema.Types.ObjectId, ref: "Product" }],
 
     // Password reset (forgot password) — numeric code flow
-resetCode: { type: String, select: false },            // sha256 hash of the 6-digit code
-resetCodeExpires: { type: Date, select: false },
-resetCodeAttempts: { type: Number, default: 0, select: false },
-resetCodeChannel: { type: String, enum: ["email", "sms", "whatsapp"], select: false },
-resetCodeLastSentAt: { type: Date, select: false },     // cooldown for resend
+    resetCode: { type: String, select: false },            // sha256 hash of the 6-digit code
+    resetCodeExpires: { type: Date, select: false },
+    resetCodeAttempts: { type: Number, default: 0, select: false },
+    resetCodeChannel: { type: String, enum: ["email", "sms", "whatsapp"], select: false },
+    resetCodeLastSentAt: { type: Date, select: false },     // cooldown for resend
 
-resetToken: { type: String, select: false },            // short-lived token after code is verified
-resetTokenExpires: { type: Date, select: false },
-
-    // Per-waiter selector control — governs what THIS waiter sees in their
-    // own "assign/select waiter" dropdown after logging in.
-    // "all"    = sees every active, non-globally-hidden waiter (default/legacy behavior)
-    // "custom" = sees only themselves + the waiters listed in visibleWaiters
-    selectorMode: { type: String, enum: ["all", "custom"], default: "all" },
-    visibleWaiters: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+    resetToken: { type: String, select: false },            // short-lived token after code is verified
+    resetTokenExpires: { type: Date, select: false },
   },
   { timestamps: true }
 );
