@@ -1,21 +1,23 @@
 // controllers/walletController.js
 import Receipt from "../models/Receipt.js";
 import User from "../models/User.js";
-import MenuItem from "../models/MenuItem.js";
+import Product from "../models/Product.js";
 import AdminSettings from "../models/AdminSettings.js";
 import { stkPush } from "../utils/mpesa.js";
-import { applyPaymentToReceipt, applyRewardRedemption , findCustomerByIdentifier} from "../utils/walletPayments.js";
+import { applyPaymentToReceipt, applyRewardRedemption, findCustomerByIdentifier } from "../utils/walletPayments.js";
 
-const attachMenuImages = async (items) => {
-  const names = items.map((i) => i.mealName);
-  const menuItems = await MenuItem.find({ name: { $in: names } }).select("name imageUrl");
-  const imageByName = Object.fromEntries(menuItems.map((m) => [m.name.toLowerCase(), m.imageUrl]));
+const attachProductImages = async (items) => {
+  const names = items.map((i) => i.productName);
+  const products = await Product.find({ name: { $in: names } }).select("name imageUrl");
+  const imageByName = Object.fromEntries(products.map((p) => [p.name.toLowerCase(), p.imageUrl]));
   return items.map((i) => ({
-    mealName: i.mealName,
+    productName: i.productName,
     quantity: i.quantity,
     unitPrice: i.unitPrice,
     lineTotal: i.lineTotal,
-    imageUrl: imageByName[i.mealName?.toLowerCase()] || null,
+    // Falls back to null here — the frontend shows the product name badge
+    // instead of an image when this is null, per the Customer Portal spec.
+    imageUrl: imageByName[i.productName?.toLowerCase()] || null,
   }));
 };
 
@@ -94,7 +96,7 @@ export const resolveBill = async (req, res) => {
       return res.status(404).json({ message: "No payable bill found with that Bill ID for this customer" });
     }
 
-    const items = await attachMenuImages(receipt.items);
+    const items = await attachProductImages(receipt.items);
     const balanceDue = Number((receipt.subtotal - (receipt.amountPaid || 0)).toFixed(2));
 
     res.json({
@@ -116,14 +118,14 @@ export const resolveBill = async (req, res) => {
 };
 
 // @desc    Pay a bill via manual till.
-//          - Staff (admins AND accountants acting from the Orders ledger)
-//            have already verified the till payment in person, so no
-//            M-Pesa code / name is required from them — this posts
-//            straight to the bill.
+//          - Staff (Super Admin, Branch Manager, or Cashier acting from the
+//            register/receipts ledger) have already verified the till
+//            payment in person, so no M-Pesa code / name is required from
+//            them — this posts straight to the bill.
 //          - A customer paying themselves from the wallet IS required to give
 //            an M-Pesa code or their full name as proof. Their submission is
 //            queued on the receipt (pendingManualPayments) and the bill stays
-//            unpaid/partial until an admin confirms it on the Payments page.
+//            unpaid/partial until staff confirm it on the Payments page.
 // @route   POST /api/wallet/pay/manual
 // @access  Protected
 export const payWithManualTill = async (req, res) => {
@@ -131,13 +133,10 @@ export const payWithManualTill = async (req, res) => {
 
   if (!receiptId || !amount) return res.status(400).json({ message: "Bill and amount are required" });
 
-  // Trusted staff = full-access admins AND accountants (role: "accountant").
-  // Checking isAdmin alone missed accountants (isAdmin: false), so they were
-  // wrongly asked for an M-Pesa code/name and queued like a customer.
-  const isStaff = req.user.isAdmin || req.user.role === "accountant";
+  const isStaff = req.user.isAdmin || ["branchManager", "cashier"].includes(req.user.role);
 
   // Only customers self-servicing from the wallet need to prove the payment —
-  // staff entering it from the Orders ledger have already confirmed it in person.
+  // staff entering it from the register have already confirmed it in person.
   if (!isStaff && (!reference || !reference.trim())) {
     return res.status(400).json({ message: "Enter the M-Pesa code or your full name as payment proof" });
   }
@@ -158,7 +157,7 @@ export const payWithManualTill = async (req, res) => {
 
     const io = req.app.get("io");
 
-    // Trusted staff entry (Orders ledger "Till" button) — apply immediately.
+    // Trusted staff entry (register "Till" button) — apply immediately.
     if (isStaff) {
       const updated = await applyPaymentToReceipt({
         receipt,
@@ -171,7 +170,7 @@ export const payWithManualTill = async (req, res) => {
       return res.json({ message: "Payment recorded", receipt: updated });
     }
 
-    // Customer self-service — queue for admin confirmation, don't touch the balance yet.
+    // Customer self-service — queue for staff confirmation, don't touch the balance yet.
     receipt.pendingManualPayments.push({
       amount: amt,
       reference: reference.trim(),
@@ -181,10 +180,10 @@ export const payWithManualTill = async (req, res) => {
     });
     await receipt.save();
 
-    io.emit("receipt:manualPending", { receipt });
-    io.emit("receipt:updated", receipt);
+    io.to(`branch:${receipt.branch}`).emit("receipt:manualPending", { receipt });
+    io.to(`branch:${receipt.branch}`).emit("receipt:updated", receipt);
 
-    res.json({ message: "Payment submitted — pending confirmation by the restaurant", receipt });
+    res.json({ message: "Payment submitted — pending confirmation by the store", receipt });
   } catch (error) {
     console.error("Error recording manual payment:", error.message);
     res.status(500).json({ message: "Failed to record payment", error: error.message });
@@ -238,7 +237,7 @@ export const payWithStk = async (req, res) => {
     await receipt.save();
 
     const io = req.app.get("io");
-    io.emit("receipt:mpesaPending", receipt);
+    io.to(`branch:${receipt.branch}`).emit("receipt:mpesaPending", receipt);
 
     res.json({
       message: "STK push sent. Enter your M-Pesa PIN to complete payment.",
@@ -312,13 +311,13 @@ export const payWithReward = async (req, res) => {
 };
 
 // ============================================================
-// ADMIN
+// ADMIN / BRANCH MANAGER — "ask if that customer should be rewarded"
 // ============================================================
 
-// @desc    Admin credits reward points to a registered customer who paid
+// @desc    Staff credits reward points to a registered customer who paid
 //          in person, by looking them up via email or phone
 // @route   POST /api/wallet/admin/add-reward
-// @access  Protected — admin, accountant
+// @access  Protected — admin, branchManager, cashier
 export const adminAddReward = async (req, res) => {
   const { identifier, amountSpent } = req.body;
   if (!identifier || !amountSpent) {
@@ -347,7 +346,7 @@ export const adminAddReward = async (req, res) => {
       type: "earn",
       points,
       kesEquivalent: Number((points * pointValue).toFixed(2)),
-      note: `Manually added by admin for in-person spend of KES ${amountSpent}`,
+      note: `Manually added by staff for in-person spend of KES ${amountSpent}`,
       createdBy: req.user._id,
     });
 
@@ -362,10 +361,10 @@ export const adminAddReward = async (req, res) => {
   }
 };
 
-// @desc    Admin pays a registered customer's bill using that customer's
+// @desc    Staff pays a registered customer's bill using that customer's
 //          own reward points (e.g. customer is at the till without cash)
 // @route   POST /api/wallet/admin/pay-with-reward
-// @access  Protected — admin
+// @access  Protected — admin, branchManager, cashier
 export const adminPayWithReward = async (req, res) => {
   const { identifier, receiptId, points } = req.body;
   if (!identifier || !receiptId) {
