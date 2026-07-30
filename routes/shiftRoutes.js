@@ -14,8 +14,9 @@ router.get("/:id/summary", protect, getShiftSummary);
 router.post("/:id/close", protect, closeShift);
 
 // NEW — station-managed shifts for named waiters
-router.post("/waiter/:waiterId/open", protect, authorize("waiter", "admin"), openShiftForWaiter);
-router.get("/waiter/:waiterId/status", protect, authorize("waiter", "admin"), getShiftStatusForWaiter);
+
+router.post("/cashier/:cashierId/open", protect, authorize("cashier", "branchManager", "admin"), openShiftForCashier);
+router.get("/cashier/:cashierId/status", protect, authorize("cashier", "branchManager", "admin"), getShiftStatusForCashier);
 
 router.get("/history/:userId", protect, authorize("admin"), getShiftHistory);
 
