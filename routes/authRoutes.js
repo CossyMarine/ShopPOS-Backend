@@ -38,7 +38,7 @@ router.put("/change-password", protect, changePassword);
 router.get("/check-availability", checkAvailability);
 router.post("/register-customer", registerCustomer);
 router.post("/register", protect, authorize("admin"), createUser);
-router.get("/waiters", protect, getWaiters);
+router.get("/cashiers", protect, getCashiers);
 
 // Forgot password (numeric code flow — email via Resend, phone via OpenSMS SMS/WhatsApp)
 router.post("/forgot-password", resetLimiter, forgotPassword);
