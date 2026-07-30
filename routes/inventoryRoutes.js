@@ -18,8 +18,8 @@ const gated = [authorize("admin", "kitchen", "accountant"), requirePermission("i
 // Simplest fix: give requirePermission a pass-through for any role that
 // isn't "accountant" (kitchen keeps working, accountant gets gated).
 
-router.get("/units", protect, authorize("admin", "accountant"), requirePermission("inventory"), getUnits);
-router.post("/units", protect, authorize("admin"), requirePermission("inventory"), createUnit);
+router.get("/units", protect, authorize("admin", "branchManager", "storekeeper", "cashier"), getUnits);
+router.post("/units", protect, authorize("admin", "branchManager", "storekeeper"), createUnit);
 router.delete("/units/:id", protect, authorize("admin"), requirePermission("inventory"), deleteUnit);
 
 router.get("/items", protect, authorize("admin", "kitchen", "accountant"), requirePermission("inventory"), getItems);
