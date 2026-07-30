@@ -33,10 +33,10 @@ const publicUser = (user) => ({
   phone: user.phone || null,
   isAdmin: user.isAdmin,
   role: user.role,
-  permissions: user.role === "accountant" ? user.permissions : undefined,
+  branch: user.branch || null,
 });
 
-// Fuller shape for the admin Users panel — includes status + join date
+// Fuller shape for the admin Users panel — includes status + join date + branch
 const adminUserView = (user) => ({
   id: user._id,
   fullName: user.fullName,
@@ -44,14 +44,17 @@ const adminUserView = (user) => ({
   phone: user.phone || null,
   isAdmin: user.isAdmin,
   role: user.role,
+  branch: user.branch || null,
   isActive: user.isActive,
   createdAt: user.createdAt,
 });
 
+const STAFF_ROLES = ["cashier", "storekeeper", "branchManager"];
+
 // ======================= LOGIN =======================
-// @desc    Authenticate any user (customer, kitchen, waiter, accountant, admin)
-//          by email or phone — cookie-based session, same flow as MarinePanel:
-//          find -> compare password -> check account status -> sign -> cookie.
+// @desc    Authenticate any user (customer, cashier, storekeeper, branchManager, admin)
+//          by email or phone — cookie-based session: find -> compare password ->
+//          check account status -> sign -> cookie.
 // @route   POST /api/auth/login
 // @access  Public
 export const login = async (req, res) => {
@@ -183,7 +186,7 @@ export const registerCustomer = async (req, res) => {
 // @access  Protected — admin
 export const createUser = async (req, res) => {
   try {
-    let { fullName, method, contact, password, isAdmin, role } = req.body;
+    let { fullName, method, contact, password, isAdmin, role, branch } = req.body;
 
     if (!fullName || !method || !contact || !password) {
       return res.status(400).json({ message: "All fields are required" });
@@ -191,8 +194,13 @@ export const createUser = async (req, res) => {
     if (!["email", "phone"].includes(method)) {
       return res.status(400).json({ message: "Choose email or phone" });
     }
-    if (!isAdmin && !["kitchen", "waiter", "accountant"].includes(role)) {
-      return res.status(400).json({ message: "Choose a role: kitchen, waiter, or accountant" });
+    if (!isAdmin) {
+      if (!STAFF_ROLES.includes(role)) {
+        return res.status(400).json({ message: "Choose a role: cashier, storekeeper, or branchManager" });
+      }
+      if (!branch) {
+        return res.status(400).json({ message: "A branch is required for this role" });
+      }
     }
 
     fullName = fullName.trim();
@@ -206,15 +214,13 @@ export const createUser = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    const isDirectWaiter = !isAdmin && role === "waiter";
-
     const user = await User.create({
       fullName,
       password: hashedPassword,
       isAdmin: !!isAdmin,
       role: isAdmin ? "customer" : role,
+      branch: isAdmin ? null : branch,
       [method]: cleanContact,
-      ...(isDirectWaiter && { waiterSince: new Date(), waiterSource: "direct" }),
     });
 
     res.status(201).json({
@@ -227,29 +233,22 @@ export const createUser = async (req, res) => {
   }
 };
 
-// @desc    Get the waiter list visible to the CURRENT logged-in user's dropdown
-// @route   GET /api/auth/waiters
+// @desc    Get the cashier list for the CURRENT logged-in user's branch —
+//          used by shared-register "who's opening the till" dropdowns.
+//          Super Admin sees every cashier across every branch.
+// @route   GET /api/auth/cashiers
 // @access  Protected
-export const getWaiters = async (req, res) => {
+export const getCashiers = async (req, res) => {
   try {
-    const requester = req.user; // set by `protect` middleware, already the full user doc
+    const filter = { role: "cashier", isActive: true };
+    if (!req.user.isAdmin) filter.branch = req.user.branch;
 
-    const baseFilter = { role: "waiter", isActive: true, hiddenFromSelector: { $ne: true } };
+    const cashiers = await User.find(filter).select("fullName branch").sort({ fullName: 1 });
 
-    // If the requester is a waiter with a custom-restricted dropdown, narrow it down —
-    // but always include the requester's own id, since a waiter must always be able
-    // to select themselves regardless of what the admin picked for them.
-    if (requester?.role === "waiter" && requester.selectorMode === "custom") {
-      const allowedIds = [...(requester.visibleWaiters || []), requester._id];
-      baseFilter._id = { $in: allowedIds };
-    }
-
-    const waiters = await User.find(baseFilter).select("fullName").sort({ fullName: 1 });
-
-    res.json(waiters.map((w) => ({ id: w._id, fullName: w.fullName })));
+    res.json(cashiers.map((c) => ({ id: c._id, fullName: c.fullName, branch: c.branch })));
   } catch (error) {
-    console.error("GET WAITERS ERROR:", error);
-    res.status(500).json({ message: "Failed to fetch waiters" });
+    console.error("GET CASHIERS ERROR:", error);
+    res.status(500).json({ message: "Failed to fetch cashiers" });
   }
 };
 
@@ -260,7 +259,9 @@ export const getAllUsers = async (req, res) => {
   try {
     const users = await User.find({
       $or: [{ isAdmin: true }, { role: { $ne: "customer" } }],
-    }).sort({ createdAt: -1 });
+    })
+      .populate("branch", "name")
+      .sort({ createdAt: -1 });
 
     res.json(users.map(adminUserView));
   } catch (error) {
@@ -275,7 +276,7 @@ export const getAllUsers = async (req, res) => {
 // @access  Protected — admin
 export const getAllUsersIncludingCustomers = async (req, res) => {
   try {
-    const users = await User.find({}).sort({ createdAt: -1 });
+    const users = await User.find({}).populate("branch", "name").sort({ createdAt: -1 });
     res.json(users.map(adminUserView));
   } catch (error) {
     console.error("GET ALL USERS (INCL CUSTOMERS) ERROR:", error);
@@ -300,14 +301,14 @@ export const getStaffCount = async (req, res) => {
 
 // @desc    Promote/change a user's role — works for staff AND customers,
 //          so a normal customer account can be promoted to staff/admin.
-//          Body: { isAdmin: true } -> full admin
-//          Body: { role: "kitchen" | "waiter" | "accountant" } -> staff role, isAdmin false
+//          Body: { isAdmin: true } -> full Super Admin
+//          Body: { role: "cashier" | "storekeeper" | "branchManager", branch } -> staff role
 // @route   PATCH /api/auth/users/:id/role
 // @access  Protected — admin
 export const updateUserRole = async (req, res) => {
   try {
     const { id } = req.params;
-    const { isAdmin, role } = req.body;
+    const { isAdmin, role, branch } = req.body;
 
     if (req.user._id.toString() === id) {
       return res.status(400).json({ message: "You can't change your own role" });
@@ -320,17 +321,17 @@ export const updateUserRole = async (req, res) => {
 
     if (isAdmin) {
       user.isAdmin = true;
+      user.branch = null;
     } else {
-      if (!["kitchen", "waiter", "accountant"].includes(role)) {
-        return res.status(400).json({ message: "Choose a role: kitchen, waiter, or accountant" });
+      if (!STAFF_ROLES.includes(role)) {
+        return res.status(400).json({ message: "Choose a role: cashier, storekeeper, or branchManager" });
       }
-      const becomingWaiter = role === "waiter" && user.role !== "waiter";
+      if (!branch) {
+        return res.status(400).json({ message: "A branch is required for this role" });
+      }
       user.isAdmin = false;
       user.role = role;
-      if (becomingWaiter) {
-        user.waiterSince = new Date();
-        user.waiterSource = "promoted";
-      }
+      user.branch = branch;
     }
 
     await user.save();
