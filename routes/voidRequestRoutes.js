@@ -10,9 +10,9 @@ import { protect, authorize, requirePermission } from "../Middlewares/authMiddle
 
 const router = express.Router();
 
-router.get("/", protect, authorize("admin", "accountant"), requirePermission("voidRequests"), getVoidRequests);
+router.get("/", protect, authorize("branchManager", "admin"), getVoidRequests);
 router.post("/", protect, authorize("cashier", "branchManager", "admin"), createVoidRequest);
-router.patch("/:id/approve", protect, authorize("admin", "accountant"), requirePermission("voidRequests"), approveVoidRequest);
-router.patch("/:id/reject", protect, authorize("admin", "accountant"), requirePermission("voidRequests"), rejectVoidRequest);
+router.patch("/:id/approve", protect, authorize("branchManager", "admin"), approveVoidRequest);
+router.patch("/:id/reject", protect, authorize("branchManager", "admin"), rejectVoidRequest);
 
 export default router;
