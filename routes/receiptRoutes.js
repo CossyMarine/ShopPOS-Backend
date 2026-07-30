@@ -41,9 +41,9 @@ router.get("/", protect, authorize("admin", "accountant"), requirePermission("or
 router.get("/paid", protect, authorize("admin", "accountant"), getPaidReceipts);
 router.get("/summary/today", protect, authorize("admin", "accountant"), getReceiptsTodaySummary);
 
-router.get("/history", protect, getReceiptHistory);
-router.get("/waiter/:name/history", protect, getReceiptHistoryByWaiter);
-router.get("/waiter/:name", protect, getReceiptsByWaiter);
+router.get("/cashier/:name/history", protect, getReceiptHistoryByCashier);
+router.get("/cashier/:name", protect, getReceiptsByCashier);
+router.patch("/:id/items", protect, authorize("cashier", "admin", "branchManager"), addItemsToReceipt);
 
 router.get("/online-pending", protect, authorize("admin"), getPendingOnlineReceipts);
 
