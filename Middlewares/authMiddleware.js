@@ -79,3 +79,33 @@ export const requireOpenShift = async (req, res, next) => {
     res.status(500).json({ message: "Failed to verify shift status", error: error.message });
   }
 };
+
+// authorize(): "admin" still means isAdmin === true (Super Admin, bypasses branch checks).
+// Pass exact roles otherwise, e.g. authorize("admin", "branchManager", "cashier")
+
+// NEW — restricts a route to the user's own branch.
+// Super Admin bypasses entirely. Everyone else must operate within req.user.branch.
+// Expects the target branch id at req.params.branchId, req.body.branch, or req.query.branch.
+export const sameBranch = (req, res, next) => {
+  if (req.user?.isAdmin) return next();
+
+  const targetBranch =
+    req.params.branchId || req.body.branch || req.query.branch;
+
+  if (!req.user.branch) {
+    return res.status(403).json({ message: "Your account has no assigned branch" });
+  }
+
+  // No branch specified on the request = scope automatically to the user's own branch
+  if (!targetBranch) {
+    req.body.branch = String(req.user.branch);
+    req.query.branch = String(req.user.branch);
+    return next();
+  }
+
+  if (String(req.user.branch) !== String(targetBranch)) {
+    return res.status(403).json({ message: "You can only access your own branch" });
+  }
+
+  next();
+};
