@@ -53,12 +53,13 @@ const receiptSchema = new mongoose.Schema(
       default: null,
     },
 
-    tableNumber: {
-      type: mongoose.Schema.Types.Mixed,
+    branch: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Branch",
       required: true,
     },
 
-    waiterName: {
+    cashierName: {
       type: String,
       default: null,
     },
@@ -150,7 +151,7 @@ const receiptSchema = new mongoose.Schema(
     },
 
     // ---- M-Pesa Daraja STK Push tracking ----
-    // "staff" = waiter/admin initiated
+    // "staff" = cashier/admin initiated
     // "wallet" = customer initiated
     mpesaSource: {
       type: String,
