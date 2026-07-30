@@ -29,10 +29,7 @@ const adminSettingsSchema = new mongoose.Schema(
     // "Call to manage" number shown on the profile page
     callNumber: { type: String, default: null },
 
-    // Table Number Behavior
-    assumeTableNumberCustomer: { type: Boolean, default: false },
-    assumeTableNumberWaiter: { type: Boolean, default: false },
-
+    
     // When true, a receipt automatically prints (with payment breakdown)
     // the moment a bill becomes fully paid. Defaults to off.
     allowPrintingDuringPayment: { type: Boolean, default: false },
