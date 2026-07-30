@@ -1,10 +1,15 @@
 // controllers/receipt/receiptManagement.js
 import Receipt from "../../models/Receipt.js";
 import Order from "../../models/Order.js";
+import Product from "../../models/Product.js";
+import { deductStockFIFO } from "../../utils/productStock.js";
 
-// @desc    Add items to an unpaid bill (customer wants to order more before paying)
+// @desc    Add items to an unpaid bill — e.g. a held/parked sale the cashier
+//          is resuming, or a correction before the customer pays. Deducts
+//          stock FIFO for the newly added items only (items already on the
+//          bill were already deducted when the sale was first created).
 // @route   PATCH /api/receipts/:id/items
-// @access  Protected — waiter, manager, admin, cashier
+// @access  Protected — cashier, branchManager, admin
 export const addItemsToReceipt = async (req, res) => {
   const { id } = req.params;
   const { items } = req.body;
@@ -22,19 +27,26 @@ export const addItemsToReceipt = async (req, res) => {
 
     const now = new Date();
 
-    // Always appended as their own line items — never merged into an existing
-    // line — so each addition stays a distinct, clearly-flagged kitchen ticket
-    // regardless of whether an earlier line of the same dish is already ready.
+    // Always appended as their own line items rather than merged into an
+    // existing line — keeps a clean, distinct audit trail of what was
+    // added and when, even if an earlier line of the same product exists.
     const addedItems = items.map((incoming) => ({
-      menuItemId: incoming.menuItemId || incoming._id || null,
-      mealName: incoming.mealName,
+      productId: incoming.productId || incoming._id || null,
+      productName: incoming.productName,
       imageUrl: incoming.imageUrl || null,
       quantity: incoming.quantity,
       unitPrice: incoming.unitPrice,
       lineTotal: incoming.quantity * incoming.unitPrice,
-      ready: false,
       addedAt: now,
     }));
+
+    // Deduct stock FIFO for the newly added items only
+    for (const line of addedItems) {
+      if (!line.productId) continue; // manually-entered fallback line
+      const product = await Product.findById(line.productId);
+      if (!product) return res.status(404).json({ message: `Product not found: ${line.productName}` });
+      await deductStockFIFO(product, line.quantity);
+    }
 
     const merged = [...receipt.items, ...addedItems];
     const subtotal = merged.reduce((sum, i) => sum + i.lineTotal, 0);
@@ -43,33 +55,13 @@ export const addItemsToReceipt = async (req, res) => {
     receipt.subtotal = subtotal;
     await receipt.save();
 
-    const existingOrder = await Order.findById(receipt.order);
-
-    // Was this ticket already served/cancelled and cleared off the kitchen
-    // screen? If so, silently merging new items into that same order would
-    // either resurrect a card kitchen already dismissed, or bury the new
-    // items among ones already prepared. Instead we reopen the order (so
-    // billing/history stays on one continuous record) but tell the kitchen
-    // to treat it as a brand-new ticket.
-    const reopened = !!existingOrder && ["completed", "cancelled"].includes(existingOrder.status);
-
-    const orderUpdate = { items: merged, subtotal };
-    if (reopened) {
-      orderUpdate.status = "pending";
-      orderUpdate.servedAt = null;
-      orderUpdate.cancelledAt = null;
-    }
-
-    const order = await Order.findByIdAndUpdate(receipt.order, orderUpdate, { new: true });
+    const order = await Order.findByIdAndUpdate(receipt.order, { items: merged, subtotal }, { new: true });
 
     const io = req.app.get("io");
-    io.emit("receipt:updated", receipt);
+    io.to(`branch:${receipt.branch}`).emit("receipt:updated", receipt);
     if (order) {
-      io.emit("order:updated", order);
-      // Kitchen-facing signal. `reopened` tells the kitchen screen whether
-      // this is a fresh ticket (order was already served/cleared) or an
-      // addition to a still-active one.
-      io.emit("order:itemsAdded", { order, receipt, addedItems, reopened });
+      io.to(`branch:${receipt.branch}`).emit("order:updated", order);
+      io.to(`branch:${receipt.branch}`).emit("order:itemsAdded", { order, receipt, addedItems });
     }
 
     res.json(receipt);
