@@ -400,3 +400,34 @@ export const adminPayWithReward = async (req, res) => {
     res.status(400).json({ message: error.message || "Failed to redeem points" });
   }
 };
+
+// @desc    Logged-in customer's full bill history, every status, paginated —
+//          powers the "My Orders"/"My Bills" page (replaces the restaurant's
+//          pending/serving/cancel order-tracking flow, which doesn't apply here)
+// @route   GET /api/wallet/history?page=1&limit=10
+// @access  Protected — customer
+export const getMyBillHistory = async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.max(1, parseInt(req.query.limit) || 10);
+
+    const filter = { customer: req.user._id };
+    const total = await Receipt.countDocuments(filter);
+    const receipts = await Receipt.find(filter)
+      .populate("branch", "name")
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit);
+
+    res.json({
+      receipts,
+      page,
+      limit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    });
+  } catch (error) {
+    console.error("Error fetching bill history:", error.message);
+    res.status(500).json({ message: "Failed to fetch bill history" });
+  }
+};
