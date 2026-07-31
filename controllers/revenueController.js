@@ -1,7 +1,15 @@
 // controllers/revenueController.js
 import mongoose from "mongoose";
 import Receipt from "../models/Receipt.js";
+import Product from "../models/Product.js";
 import { getKenyanDayBounds } from "../utils/dateHelpers.js";
+
+const formatHourLabel = (hour) => {
+  const period = hour >= 12 ? "PM" : "AM";
+  let hr = hour % 12;
+  if (hr === 0) hr = 12;
+  return `${hr} ${period}`;
+};
 
 // @desc    Get total revenue and paid receipt count for today, optionally
 //          scoped to one branch (?branch=<id>) — powers the Public Customer
@@ -73,5 +81,189 @@ export const getRevenueSummary = async (req, res) => {
   } catch (error) {
     console.error("Error fetching revenue summary:", error.message);
     res.status(500).json({ message: "Failed to fetch revenue summary", error: error.message });
+  }
+};
+
+// @desc    Powers the new dashboard visuals: hourly sales trend, payment
+//          method breakdown, category share, low stock count, refunds/voids
+//          today, and an estimated net profit — all scoped to today (Kenyan
+//          calendar day) and optionally one branch (?branch=<id>).
+//
+//          NOTE on netProfit: Receipts don't store a per-sale cost snapshot,
+//          so cost is approximated from each product's *current* remaining
+//          stock batches (quantity-weighted average costPerUnit). If a
+//          product has no batches left (fully sold out), its cost falls back
+//          to its own unitPrice at time of sale (i.e. 0 margin assumed for
+//          that item) rather than overstating profit. Treat this figure as
+//          an estimate, not an audited P&L number.
+// @route   GET /api/revenue/dashboard-stats?branch=
+// @access  Protected — admin, branchManager
+export const getDashboardStats = async (req, res) => {
+  try {
+    const { start: startOfDay, end: endOfDay } = getKenyanDayBounds();
+    const branchMatch = req.query.branch ? { branch: new mongoose.Types.ObjectId(req.query.branch) } : {};
+    const paidTodayMatch = {
+      status: "paid",
+      paidAt: { $gte: startOfDay, $lte: endOfDay },
+      ...branchMatch,
+    };
+
+    const [hourlyRaw, paymentRaw, categoryRaw, lowStockAgg, profitAgg, voidedAgg] = await Promise.all([
+      // Hourly revenue trend (Kenyan wall-clock hour)
+      Receipt.aggregate([
+        { $match: paidTodayMatch },
+        {
+          $group: {
+            _id: { $hour: { date: "$paidAt", timezone: "Africa/Nairobi" } },
+            revenue: { $sum: "$subtotal" },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]),
+
+      // Payment method breakdown
+      Receipt.aggregate([
+        { $match: paidTodayMatch },
+        { $group: { _id: "$paymentMethod", amount: { $sum: "$subtotal" } } },
+        { $sort: { amount: -1 } },
+      ]),
+
+      // Category share (join items -> products for category)
+      Receipt.aggregate([
+        { $match: paidTodayMatch },
+        { $unwind: "$items" },
+        {
+          $lookup: {
+            from: "products",
+            localField: "items.productId",
+            foreignField: "_id",
+            as: "product",
+          },
+        },
+        { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
+        {
+          $group: {
+            _id: { $ifNull: ["$product.category", "Uncategorized"] },
+            amount: { $sum: "$items.lineTotal" },
+          },
+        },
+        { $sort: { amount: -1 } },
+      ]),
+
+      // Low stock count (currentStock <= reorderLevel)
+      Product.aggregate([
+        {
+          $match: req.query.branch
+            ? { branch: new mongoose.Types.ObjectId(req.query.branch), isActive: true }
+            : { isActive: true },
+        },
+        { $addFields: { currentStock: { $sum: "$batches.quantity" } } },
+        { $match: { $expr: { $lte: ["$currentStock", "$reorderLevel"] } } },
+        { $count: "count" },
+      ]),
+
+      // Estimated net profit
+      Receipt.aggregate([
+        { $match: paidTodayMatch },
+        { $unwind: "$items" },
+        {
+          $lookup: {
+            from: "products",
+            localField: "items.productId",
+            foreignField: "_id",
+            as: "product",
+          },
+        },
+        { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
+        {
+          $addFields: {
+            avgCost: {
+              $let: {
+                vars: {
+                  totalQty: { $sum: { $ifNull: ["$product.batches.quantity", []] } },
+                  totalCostQty: {
+                    $sum: {
+                      $map: {
+                        input: { $ifNull: ["$product.batches", []] },
+                        as: "b",
+                        in: { $multiply: ["$$b.quantity", "$$b.costPerUnit"] },
+                      },
+                    },
+                  },
+                },
+                in: {
+                  $cond: [
+                    { $gt: ["$$totalQty", 0] },
+                    { $divide: ["$$totalCostQty", "$$totalQty"] },
+                    "$items.unitPrice",
+                  ],
+                },
+              },
+            },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            revenue: { $sum: "$items.lineTotal" },
+            cost: { $sum: { $multiply: ["$avgCost", "$items.quantity"] } },
+          },
+        },
+      ]),
+
+      // Refunds & voids today (by receipt's last update within today, i.e. when it was voided)
+      Receipt.aggregate([
+        {
+          $match: {
+            status: "voided",
+            updatedAt: { $gte: startOfDay, $lte: endOfDay },
+            ...branchMatch,
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            amount: { $sum: "$subtotal" },
+            count: { $sum: 1 },
+          },
+        },
+      ]),
+    ]);
+
+    const hourMap = {};
+    hourlyRaw.forEach((h) => { hourMap[h._id] = h.revenue; });
+    const hourlyTrend = Array.from({ length: 24 }, (_, h) => ({
+      hour: h,
+      label: formatHourLabel(h),
+      revenue: hourMap[h] || 0,
+    }));
+
+    const categoryTotal = categoryRaw.reduce((sum, c) => sum + c.amount, 0) || 1;
+    const categoryBreakdown = categoryRaw.map((c) => ({
+      category: c._id || "Uncategorized",
+      amount: c.amount,
+      percent: Math.round((c.amount / categoryTotal) * 1000) / 10,
+    }));
+
+    const profit = profitAgg[0] || { revenue: 0, cost: 0 };
+    const netProfit = Math.round(profit.revenue - profit.cost);
+    const netProfitMargin = profit.revenue > 0
+      ? Math.round((netProfit / profit.revenue) * 1000) / 10
+      : 0;
+
+    const voided = voidedAgg[0] || { amount: 0, count: 0 };
+
+    res.json({
+      hourlyTrend,
+      paymentBreakdown: paymentRaw.map((p) => ({ method: p._id || "unknown", amount: p.amount })),
+      categoryBreakdown,
+      lowStockCount: lowStockAgg[0]?.count || 0,
+      netProfit,
+      netProfitMargin,
+      voidedToday: { amount: voided.amount, count: voided.count },
+    });
+  } catch (error) {
+    console.error("Error fetching dashboard stats:", error.message);
+    res.status(500).json({ message: "Failed to fetch dashboard stats", error: error.message });
   }
 };
