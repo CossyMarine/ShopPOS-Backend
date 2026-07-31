@@ -6,6 +6,5 @@ import { protect, authorize } from "../Middlewares/authMiddleware.js";
 const router = express.Router();
 
 router.get("/today", getTodayRevenue);
-router.get("/summary", protect, authorize("admin"), getRevenueSummary);
-
+router.get("/summary", protect, authorize("admin", "branchManager"), getRevenueSummary);
 export default router;
