@@ -25,7 +25,7 @@ const server = http.createServer(app);
    🔌 SOCKET.IO SETUP
 ======================================== */
 const ALLOWED_ORIGINS = [
-  "https://restopos-pi.vercel.app",
+  "https://shop-pos-frontend-azure.vercel.app",
   "http://localhost:3000", // local dev
 ];
 
