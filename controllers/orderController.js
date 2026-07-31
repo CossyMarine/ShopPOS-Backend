@@ -15,12 +15,15 @@ export const createOrder = async (req, res) => {
   }
 
   try {
-    // Deduct stock FIFO for every line — fails fast if any item is short
+    // Deduct stock FIFO for every line — fails fast if any item is short.
+    // Mutates each line in place with its real cost-at-sale, so `items`
+    // (passed straight into Order.create below) carries it through.
     for (const line of items) {
       if (!line.productId) continue; // manually-entered scan fallback
       const product = await Product.findById(line.productId);
       if (!product) return res.status(404).json({ message: `Product not found: ${line.productName}` });
-      await deductStockFIFO(product, line.quantity);
+      const { avgCostPerUnit } = await deductStockFIFO(product, line.quantity);
+      line.costPriceAtSale = avgCostPerUnit;
     }
 
     const order = await Order.create({
