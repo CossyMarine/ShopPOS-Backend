@@ -8,7 +8,6 @@ import cookieParser from "cookie-parser";
 import authRoutes from "./routes/authRoutes.js";
 import productRoutes from "./routes/productRoutes.js";
 import branchRoutes from "./routes/branchRoutes.js";
-import orderRoutes from "./routes/orderRoutes.js";
 import receiptRoutes from "./routes/receiptRoutes.js";
 import shiftRoutes from "./routes/shiftRoutes.js";
 import voidRequestRoutes from "./routes/voidRequestRoutes.js";
@@ -59,7 +58,6 @@ app.get("/", (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/branches", branchRoutes);
-app.use("/api/orders", orderRoutes);
 app.use("/api/receipts", receiptRoutes);
 app.use("/api/shifts", shiftRoutes);
 app.use("/api/void-requests", voidRequestRoutes);
