@@ -1,3 +1,4 @@
+// routes/authRoutes.js
 import express from "express";
 import rateLimit from "express-rate-limit";
 import {
@@ -5,7 +6,7 @@ import {
   logout,
   getMe,
   createUser,
-  getWaiters,
+  getCashiers,
   registerCustomer,
   checkAvailability,
   getAllUsers,
@@ -20,7 +21,7 @@ import {
   verifyResetCode,
   resetPasswordWithCode,
 } from "../controllers/authController.js";
-import { protect, authorize, requirePermission } from "../Middlewares/authMiddleware.js";
+import { protect, authorize } from "../Middlewares/authMiddleware.js";
 
 const router = express.Router();
 
@@ -46,11 +47,13 @@ router.post("/resend-reset-code", resetLimiter, resendResetCode);
 router.post("/verify-reset-code", resetLimiter, verifyResetCode);
 router.post("/reset-password", resetLimiter, resetPasswordWithCode);
 
-// Admin — Users management panel
-router.get("/users", protect, authorize("admin", "accountant"), requirePermission("users"), getAllUsers);
-router.get("/users/all", protect, authorize("admin", "accountant"), requirePermission("users"), getAllUsersIncludingCustomers);
-router.get("/staff-count", protect, authorize("admin", "accountant"), requirePermission("users"), getStaffCount);
-router.patch("/users/:id/role", protect, authorize("admin", "accountant"), requirePermission("users"), updateUserRole);
-router.patch("/users/:id/status", protect, authorize("admin", "accountant"), requirePermission("users"), toggleUserStatus);
+// Staff directory — GET is admin OR branchManager (their own branch, matching
+// the "manager shares almost everything with admin" spec); role/status
+// changes stay admin-only since only Super Admin should promote/demote.
+router.get("/users", protect, authorize("admin", "branchManager"), getAllUsers);
+router.get("/users/all", protect, authorize("admin", "branchManager"), getAllUsersIncludingCustomers);
+router.get("/staff-count", protect, authorize("admin", "branchManager"), getStaffCount);
+router.patch("/users/:id/role", protect, authorize("admin"), updateUserRole);
+router.patch("/users/:id/status", protect, authorize("admin"), toggleUserStatus);
 
 export default router;
