@@ -12,7 +12,7 @@ const router = express.Router();
 const stockStaff = authorize("admin", "branchManager", "storekeeper");
 const sellStaff   = authorize("admin", "branchManager", "cashier", "storekeeper");
 
-router.get("/", sellStaff, sameBranch, getProducts);          // catalog — cashier + others read
+router.get("/", protect, sellStaff, sameBranch, getProducts);          // catalog — cashier + others read
 router.get("/barcode/:code", protect, sellStaff, sameBranch, getProductByBarcode);
 
 router.post("/upload-image", protect, stockStaff, uploadProductImageMiddleware.single("image"), uploadProductImage);
