@@ -6,7 +6,8 @@ import cookieParser from "cookie-parser";
 
 // Routes
 import authRoutes from "./routes/authRoutes.js";
-import menuRoutes from "./routes/menuRoutes.js";
+import productRoutes from "./routes/productRoutes.js";
+import branchRoutes from "./routes/branchRoutes.js";
 import orderRoutes from "./routes/orderRoutes.js";
 import receiptRoutes from "./routes/receiptRoutes.js";
 import shiftRoutes from "./routes/shiftRoutes.js";
@@ -15,11 +16,8 @@ import revenueRoutes from "./routes/revenueRoutes.js";
 import settingsRoutes from "./routes/settingsRoutes.js";
 import walletRoutes from "./routes/walletRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
-import waiterRoutes from "./routes/waiterRoutes.js";
-import kitchenSettingsRoutes from "./routes/kitchenSettingsRoutes.js";
-import notificationSoundRoutes from "./routes/notificationSoundRoutes.js";
 import inventoryRoutes from "./routes/inventoryRoutes.js";
-import accountantRoutes from "./routes/accountantRoutes.js";
+import customerRoutes from "./routes/customerRoutes.js";
 
 dotenv.config();
 
@@ -52,14 +50,15 @@ app.use(cookieParser());
 
 /* Health check */
 app.get("/", (req, res) => {
-  res.json({ status: "RPS backend running" });
+  res.json({ status: "Babylon POS backend running" });
 });
 
 /* =================================================
    ROUTES
 ================================================= */
 app.use("/api/auth", authRoutes);
-app.use("/api/menu", menuRoutes);
+app.use("/api/products", productRoutes);
+app.use("/api/branches", branchRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/receipts", receiptRoutes);
 app.use("/api/shifts", shiftRoutes);
@@ -68,10 +67,7 @@ app.use("/api/revenue", revenueRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/wallet", walletRoutes);
 app.use("/api/payments", paymentRoutes);
-app.use("/api/waiters", waiterRoutes);
-app.use("/api/kitchen-settings", kitchenSettingsRoutes);
-app.use("/api/notification-sounds", notificationSoundRoutes);
 app.use("/api/inventory", inventoryRoutes);
-app.use("/api/accountants", accountantRoutes);
+app.use("/api/customer", customerRoutes);
 
 export default app;
