@@ -1,6 +1,6 @@
 // routes/walletRoutes.js
 import express from "express";
-import { protect, authorize, requirePermission, requireOpenShift } from "../Middlewares/authMiddleware.js";
+import { protect, authorize, requireOpenShift } from "../Middlewares/authMiddleware.js";
 import {
   getMyWallet,
   resolveBill,
@@ -22,8 +22,11 @@ router.post("/pay/stk", protect, payWithStk);
 router.get("/pay/stk/:receiptId/status", protect, getWalletStkStatus);
 router.post("/pay/reward", protect, payWithReward);
 
-router.post("/admin/add-reward", protect, authorize("admin", "accountant"), requirePermission("payments"), adminAddReward);
-router.post("/admin/pay-with-reward", protect, authorize("admin", "accountant"), requirePermission("payments"), requireOpenShift, adminPayWithReward);
+// "Ask if that customer should be rewarded" — any till-facing staff can award,
+// matching the cashier PaymentModal flow, not just admin.
+router.post("/admin/add-reward", protect, authorize("admin", "branchManager", "cashier"), adminAddReward);
+router.post("/admin/pay-with-reward", protect, authorize("admin", "branchManager", "cashier"), requireOpenShift, adminPayWithReward);
 
 router.get("/history", protect, authorize("customer"), getMyBillHistory);
+
 export default router;
