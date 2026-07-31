@@ -37,15 +37,17 @@ export const addItemsToReceipt = async (req, res) => {
       quantity: incoming.quantity,
       unitPrice: incoming.unitPrice,
       lineTotal: incoming.quantity * incoming.unitPrice,
+      costPriceAtSale: null, // filled in below once we know the real cost
       addedAt: now,
     }));
 
-    // Deduct stock FIFO for the newly added items only
+    // Deduct stock FIFO for the newly added items only, capturing real cost
     for (const line of addedItems) {
       if (!line.productId) continue; // manually-entered fallback line
       const product = await Product.findById(line.productId);
       if (!product) return res.status(404).json({ message: `Product not found: ${line.productName}` });
-      await deductStockFIFO(product, line.quantity);
+      const { avgCostPerUnit } = await deductStockFIFO(product, line.quantity);
+      line.costPriceAtSale = avgCostPerUnit;
     }
 
     const merged = [...receipt.items, ...addedItems];
