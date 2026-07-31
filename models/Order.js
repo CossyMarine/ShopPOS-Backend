@@ -4,12 +4,17 @@ import mongoose from "mongoose";
 // orderItemSchema — rename menuItemId/mealName to product terms:
 const orderItemSchema = new mongoose.Schema(
   {
-    productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product", default: null },
+    productId:  { type: mongoose.Schema.Types.ObjectId, ref: "Product", default: null },
     productName: { type: String, required: true },
-    imageUrl:  { type: String, default: null },
-    quantity:  { type: Number, required: true },
-    unitPrice: { type: Number, required: true },
-    lineTotal: { type: Number, required: true },
+    imageUrl:   { type: String, default: null },
+    quantity:   { type: Number, required: true },
+    unitPrice:  { type: Number, required: true },
+    lineTotal:  { type: Number, required: true },
+    // The REAL buying price per unit, captured from the exact batch(es) FIFO
+    // deducted at the moment of sale (quantity-weighted average if the sale
+    // spanned more than one batch). null only for lines with no productId
+    // (manual scan fallback) or receipts predating this field.
+    costPriceAtSale: { type: Number, default: null },
   },
   { _id: false }
 );
