@@ -1,41 +1,12 @@
 // routes/inventoryRoutes.js
 import express from "express";
-import {
-  getUnits, createUnit, deleteUnit, getItems, createItem, updateItem, deleteItem,
-  addStock, getStockHistory, logUsage, adjustStock, getUsageHistory,
-  getUsageOverview, getItemUsageDetail, getInventorySummary,
-} from "../controllers/inventoryController.js";
-import { protect, authorize, requirePermission } from "../Middlewares/authMiddleware.js";
+import { getUnits, createUnit, deleteUnit } from "../controllers/inventoryController.js";
+import { protect, authorize } from "../Middlewares/authMiddleware.js";
 
 const router = express.Router();
 
-// Kitchen keeps its existing free access. Accountant only gets in if granted
-// the "inventory" permission; admin always passes.
-const kitchenOrAdmin = authorize("admin", "kitchen");
-const gated = [authorize("admin", "kitchen", "accountant"), requirePermission("inventory")];
-// requirePermission 403s a plain "kitchen" role since it only checks
-// isAdmin / accountant permissions — so kitchen still needs its own bypass.
-// Simplest fix: give requirePermission a pass-through for any role that
-// isn't "accountant" (kitchen keeps working, accountant gets gated).
-
 router.get("/units", protect, authorize("admin", "branchManager", "storekeeper", "cashier"), getUnits);
 router.post("/units", protect, authorize("admin", "branchManager", "storekeeper"), createUnit);
-router.delete("/units/:id", protect, authorize("admin"), requirePermission("inventory"), deleteUnit);
-
-router.get("/items", protect, authorize("admin", "kitchen", "accountant"), requirePermission("inventory"), getItems);
-router.post("/items", protect, authorize("admin"), requirePermission("inventory"), createItem);
-router.put("/items/:id", protect, authorize("admin"), requirePermission("inventory"), updateItem);
-router.delete("/items/:id", protect, authorize("admin"), requirePermission("inventory"), deleteItem);
-
-router.get("/stock", protect, authorize("admin", "accountant"), requirePermission("inventory"), getStockHistory);
-router.post("/stock", protect, authorize("admin"), requirePermission("inventory"), addStock);
-
-router.get("/usage/overview", protect, authorize("admin", "kitchen", "accountant"), requirePermission("inventory"), getUsageOverview);
-router.get("/usage/:itemId/detail", protect, authorize("admin", "kitchen", "accountant"), requirePermission("inventory"), getItemUsageDetail);
-router.get("/usage", protect, authorize("admin"), requirePermission("inventory"), getUsageHistory);
-router.post("/usage", protect, authorize("admin", "kitchen"), logUsage);
-router.post("/adjust", protect, authorize("admin"), requirePermission("inventory"), adjustStock);
-
-router.get("/summary", protect, authorize("admin", "accountant"), requirePermission("inventory"), getInventorySummary);
+router.delete("/units/:id", protect, authorize("admin"), deleteUnit);
 
 export default router;
