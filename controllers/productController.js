@@ -22,12 +22,18 @@ export const getProducts = async (req, res) => {
   }
 };
 
-// @desc    Look up a single product by barcode — powers the cashier scan input
+// @desc    Look up a single product by barcode — powers the cashier scan input.
+//          Matches either the each barcode or the case barcode (scanning a
+//          case at the till still rings up the product; case-vs-each
+//          quantity handling belongs to receiving, not selling).
 // @route   GET /api/products/barcode/:code?branch=<id>
 // @access  Protected — cashier, storekeeper, branchManager, admin
 export const getProductByBarcode = async (req, res) => {
   try {
-    const filter = { barcode: req.params.code, isActive: true };
+    const filter = {
+      isActive: true,
+      $or: [{ barcode: req.params.code }, { caseBarcode: req.params.code }],
+    };
     if (req.query.branch) filter.branch = req.query.branch;
 
     const product = await Product.findOne(filter).populate("unit", "name abbreviation");
@@ -58,15 +64,24 @@ export const uploadProductImage = async (req, res) => {
 // @access  Protected — storekeeper, branchManager, admin
 export const createProduct = async (req, res) => {
   try {
-    const { name, barcode, category, unit, sellingPrice, reorderLevel, imageUrl, imagePublicId, branch } = req.body;
+    const {
+      name, barcode, category, unit, sellingPrice, reorderLevel,
+      packSize, caseLabel, caseBarcode,
+      imageUrl, imagePublicId, branch,
+    } = req.body;
 
     if (!name || !unit || !sellingPrice || !branch) {
       return res.status(400).json({ message: "Name, unit, sellingPrice and branch are required" });
     }
 
+    const resolvedPackSize = packSize ? Math.max(1, Math.round(Number(packSize))) : 1;
+
     const product = await Product.create({
       name, barcode: barcode || undefined, category: category || "General",
       unit, sellingPrice, reorderLevel: reorderLevel || 0,
+      packSize: resolvedPackSize,
+      caseLabel: resolvedPackSize > 1 ? (caseLabel || "Carton") : "Carton",
+      caseBarcode: caseBarcode || null,
       imageUrl: imageUrl || null, imagePublicId: imagePublicId || null,
       branch, batches: [],
     });
@@ -78,14 +93,21 @@ export const createProduct = async (req, res) => {
   }
 };
 
-// @desc    Update product details (name, price, category, barcode, image)
+// @desc    Update product details (name, price, category, barcode, image, pack size)
 // @route   PUT /api/products/:id
 // @access  Protected — storekeeper, branchManager, admin
 export const updateProduct = async (req, res) => {
   try {
-    const allowed = ["name", "barcode", "category", "unit", "sellingPrice", "reorderLevel", "imageUrl", "imagePublicId", "isActive"];
+    const allowed = [
+      "name", "barcode", "category", "unit", "sellingPrice", "reorderLevel",
+      "packSize", "caseLabel", "caseBarcode", "imageUrl", "imagePublicId", "isActive",
+    ];
     const updates = {};
     allowed.forEach((key) => { if (req.body[key] !== undefined) updates[key] = req.body[key]; });
+
+    if (updates.packSize !== undefined) {
+      updates.packSize = Math.max(1, Math.round(Number(updates.packSize) || 1));
+    }
 
     const existing = await Product.findById(req.params.id);
     if (!existing) return res.status(404).json({ message: "Product not found" });
@@ -102,12 +124,21 @@ export const updateProduct = async (req, res) => {
   }
 };
 
-// @desc    Receive new stock — storekeeper logs a batch with cost + expiry
+// @desc    Receive new stock — storekeeper logs a batch with cost + expiry.
+//          Accepts either loose units or, if the product has a packSize > 1,
+//          whole cases — the storekeeper types in whatever the supplier
+//          invoice actually says (cartons @ price/carton, or pieces @
+//          price/piece), and this always normalizes to per-each cost
+//          before it's stored, so FIFO deduction and profit math never
+//          have to think about cases again.
 // @route   POST /api/products/:id/receive-stock
+// @body    { quantity, costPerUnit, receivedAs?: "case"|"each", expiryDate?, supplierNote? }
+//          receivedAs defaults to "each". quantity/costPerUnit are interpreted
+//          per the chosen mode (cases & cost-per-case, or eaches & cost-per-each).
 // @access  Protected — storekeeper, branchManager, admin
 export const receiveStock = async (req, res) => {
   try {
-    const { quantity, costPerUnit, expiryDate, supplierNote } = req.body;
+    const { quantity, costPerUnit, receivedAs, expiryDate, supplierNote } = req.body;
     if (!quantity || costPerUnit === undefined) {
       return res.status(400).json({ message: "quantity and costPerUnit are required" });
     }
@@ -115,10 +146,37 @@ export const receiveStock = async (req, res) => {
     const product = await Product.findById(req.params.id);
     if (!product) return res.status(404).json({ message: "Product not found" });
 
-    product.batches.push({
-      quantity, costPerUnit, expiryDate: expiryDate || null,
-      receivedBy: req.user._id, supplierNote: supplierNote || "",
-    });
+    const packSize = product.packSize || 1;
+    const mode = receivedAs === "case" ? "case" : "each";
+
+    if (mode === "case" && packSize <= 1) {
+      return res.status(400).json({
+        message: `${product.name} has no ${product.caseLabel || "case"} size set — receive it by each instead, or set a pack size on the product first`,
+      });
+    }
+
+    const qty = Number(quantity);
+    const cost = Number(costPerUnit);
+
+    const newBatch = mode === "case"
+      ? {
+          quantity: qty * packSize,           // stored in eaches, like every other batch
+          costPerUnit: cost / packSize,       // stored per-each, like every other batch
+          receivedAsCases: qty,               // audit trail: what was actually typed in
+          costPerCase: cost,
+          expiryDate: expiryDate || null,
+          receivedBy: req.user._id,
+          supplierNote: supplierNote || "",
+        }
+      : {
+          quantity: qty,
+          costPerUnit: cost,
+          expiryDate: expiryDate || null,
+          receivedBy: req.user._id,
+          supplierNote: supplierNote || "",
+        };
+
+    product.batches.push(newBatch);
     await product.save();
 
     res.json(product);
