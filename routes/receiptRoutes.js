@@ -11,41 +11,42 @@ import {
   getReceipts,
   getPaidReceipts,
   getReceiptsTodaySummary,
-  getReceiptsByWaiter,
+  getReceiptsByCashier,
   getReceiptById,
   getReceiptHistory,
-  getReceiptHistoryByWaiter,
+  getReceiptHistoryByCashier,
   addItemsToReceipt,
   markReceiptPrinted,
   getPendingOnlineReceipts,
 } from "../controllers/receiptController.js";
-import { protect, authorize, requirePermission, requireOpenShift } from "../Middlewares/authMiddleware.js";
+import { protect, authorize, requireOpenShift, sameBranch } from "../Middlewares/authMiddleware.js";
 
 const router = express.Router();
 
-// Payment — admin OR accountant-with-payments-permission-and-open-shift
-router.patch("/:id/pay", protect, authorize("admin", "accountant"), requirePermission("payments"), requireOpenShift, payReceipt);
-router.patch("/:id/pay/cash-till", protect, authorize("admin", "accountant"), requirePermission("payments"), requireOpenShift, payCashAndTill);
-router.patch("/:id/pay/combo", protect, authorize("admin", "accountant"), requirePermission("payments"), requireOpenShift, payCombo);
-router.post("/:id/mpesa/initiate", protect, authorize("admin", "accountant"), requirePermission("payments"), requireOpenShift, initiateMpesaPayment);
-router.get("/:id/mpesa/status", protect, authorize("admin", "accountant"), getMpesaStatus);
-router.post("/:id/mpesa/cancel", protect, authorize("admin", "accountant"), cancelMpesaPayment);
+const posStaff = authorize("cashier", "branchManager", "admin");
+
+// Payment — the actual register checkout flow
+router.patch("/:id/pay", protect, posStaff, requireOpenShift, payReceipt);
+router.patch("/:id/pay/cash-till", protect, posStaff, requireOpenShift, payCashAndTill);
+router.patch("/:id/pay/combo", protect, posStaff, requireOpenShift, payCombo);
+router.post("/:id/mpesa/initiate", protect, posStaff, requireOpenShift, initiateMpesaPayment);
+router.get("/:id/mpesa/status", protect, posStaff, getMpesaStatus);
+router.post("/:id/mpesa/cancel", protect, posStaff, cancelMpesaPayment);
 
 // Public Safaricom webhook — no auth
 router.post("/mpesa/callback", mpesaCallback);
 
-router.patch("/:id/items", protect, authorize("waiter", "admin", "manager", "cashier"), addItemsToReceipt);
+router.patch("/:id/items", protect, posStaff, addItemsToReceipt);
 router.patch("/:id/print", protect, markReceiptPrinted);
 
-router.get("/", protect, authorize("admin", "accountant"), requirePermission("ordersReceipts"), getReceipts);
-router.get("/paid", protect, authorize("admin", "accountant"), getPaidReceipts);
-router.get("/summary/today", protect, authorize("admin", "accountant"), getReceiptsTodaySummary);
+router.get("/", protect, posStaff, sameBranch, getReceipts);
+router.get("/paid", protect, authorize("branchManager", "admin"), sameBranch, getPaidReceipts);
+router.get("/summary/today", protect, posStaff, sameBranch, getReceiptsTodaySummary);
+router.get("/online-pending", protect, posStaff, sameBranch, getPendingOnlineReceipts);
 
 router.get("/cashier/:name/history", protect, getReceiptHistoryByCashier);
 router.get("/cashier/:name", protect, getReceiptsByCashier);
-router.patch("/:id/items", protect, authorize("cashier", "admin", "branchManager"), addItemsToReceipt);
-
-router.get("/online-pending", protect, authorize("admin"), getPendingOnlineReceipts);
+router.get("/history", protect, posStaff, getReceiptHistory);
 
 router.get("/:id", protect, getReceiptById);
 
