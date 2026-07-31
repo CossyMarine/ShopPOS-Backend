@@ -84,18 +84,20 @@ export const getRevenueSummary = async (req, res) => {
   }
 };
 
-// @desc    Powers the new dashboard visuals: hourly sales trend, payment
-//          method breakdown, category share, low stock count, refunds/voids
-//          today, and an estimated net profit — all scoped to today (Kenyan
-//          calendar day) and optionally one branch (?branch=<id>).
+// @desc    Powers the dashboard visuals: hourly sales trend, payment method
+//          breakdown, category share, low stock count, refunds/voids today,
+//          and net profit — scoped to today (Kenyan calendar day) and
+//          optionally one branch (?branch=<id>).
 //
-//          NOTE on netProfit: Receipts don't store a per-sale cost snapshot,
-//          so cost is approximated from each product's *current* remaining
-//          stock batches (quantity-weighted average costPerUnit). If a
-//          product has no batches left (fully sold out), its cost falls back
-//          to its own unitPrice at time of sale (i.e. 0 margin assumed for
-//          that item) rather than overstating profit. Treat this figure as
-//          an estimate, not an audited P&L number.
+//          NOTE on netProfit: every sale going forward stamps the REAL
+//          buying price onto each line at the moment of sale
+//          (items.costPriceAtSale — see deductStockFIFO). This aggregation
+//          uses that exact value whenever it's present. It only falls back
+//          to estimating from the product's *current* remaining batch cost
+//          for old receipts that predate this field — and if even that's
+//          unavailable (product since sold out / deleted), it assumes 0
+//          margin for that line rather than guessing a number that could
+//          overstate profit.
 // @route   GET /api/revenue/dashboard-stats?branch=
 // @access  Protected — admin, branchManager
 export const getDashboardStats = async (req, res) => {
@@ -162,7 +164,7 @@ export const getDashboardStats = async (req, res) => {
         { $count: "count" },
       ]),
 
-      // Estimated net profit
+      // Net profit — exact where costPriceAtSale exists, estimated otherwise
       Receipt.aggregate([
         { $match: paidTodayMatch },
         { $unwind: "$items" },
@@ -177,7 +179,10 @@ export const getDashboardStats = async (req, res) => {
         { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
         {
           $addFields: {
-            avgCost: {
+            // Fallback estimate only used when costPriceAtSale is missing —
+            // quantity-weighted average of the product's current remaining
+            // batches, or the sale's own unitPrice (0 margin) if none exist.
+            estimatedCost: {
               $let: {
                 vars: {
                   totalQty: { $sum: { $ifNull: ["$product.batches.quantity", []] } },
@@ -203,15 +208,26 @@ export const getDashboardStats = async (req, res) => {
           },
         },
         {
+          $addFields: {
+            lineCost: {
+              $cond: [
+                { $ne: ["$items.costPriceAtSale", null] },
+                { $multiply: ["$items.costPriceAtSale", "$items.quantity"] },
+                { $multiply: ["$estimatedCost", "$items.quantity"] },
+              ],
+            },
+          },
+        },
+        {
           $group: {
             _id: null,
             revenue: { $sum: "$items.lineTotal" },
-            cost: { $sum: { $multiply: ["$avgCost", "$items.quantity"] } },
+            cost: { $sum: "$lineCost" },
           },
         },
       ]),
 
-      // Refunds & voids today (by receipt's last update within today, i.e. when it was voided)
+      // Refunds & voids today (by when the receipt was voided)
       Receipt.aggregate([
         {
           $match: {
