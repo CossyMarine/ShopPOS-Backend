@@ -10,6 +10,7 @@ import {
   payWithReward,
   adminAddReward,
   adminPayWithReward,
+  getMyBillHistory,
 } from "../controllers/walletController.js";
 
 const router = express.Router();
@@ -24,4 +25,5 @@ router.post("/pay/reward", protect, payWithReward);
 router.post("/admin/add-reward", protect, authorize("admin", "accountant"), requirePermission("payments"), adminAddReward);
 router.post("/admin/pay-with-reward", protect, authorize("admin", "accountant"), requirePermission("payments"), requireOpenShift, adminPayWithReward);
 
+router.get("/history", protect, authorize("customer"), getMyBillHistory);
 export default router;
