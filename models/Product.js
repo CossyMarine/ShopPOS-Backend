@@ -24,17 +24,25 @@ const productSchema = new mongoose.Schema(
     name:          { type: String, required: true, trim: true },
     barcode:       { type: String, trim: true, unique: true, sparse: true }, // EAN-13/CODE128/QR payload — the EACH barcode
     category:      { type: String, default: "General", trim: true },
-    unit:          { type: mongoose.Schema.Types.ObjectId, ref: "InventoryUnit", required: true },
+    unit:          { type: mongoose.Schema.Types.ObjectId, ref: "InventoryUnit", required: true }, // the LOOSE/each unit, e.g. Kilogram
 
-    // How many selling units ("each") make up one purchase case/carton.
+    // How many selling units ("each") make up one purchase case/sack.
     // 1 = bought and sold loose, no case conversion (default, backwards compatible).
+    // e.g. a 50kg sack of sugar with unit=Kilogram → packSize: 50
     packSize:      { type: Number, default: 1, min: 1 },
-    // Display label for the purchase unit when packSize > 1, e.g. "Carton", "Box", "Crate"
+    // Display label for the purchase unit when packSize > 1, e.g. "Sack", "Carton", "Crate"
     caseLabel:     { type: String, default: "Carton", trim: true },
     // Optional separate barcode printed on the case itself, distinct from the each barcode
     caseBarcode:   { type: String, trim: true, default: null },
 
+    // Price per loose/each unit — e.g. KES 180 per kg. Always required.
     sellingPrice:  { type: Number, required: true },
+    // Price for the WHOLE case/sack sold intact — e.g. KES 6,000 for the sack.
+    // Independent of sellingPrice × packSize on purpose: bulk pricing is
+    // rarely a straight multiple (that's the whole point of buying in bulk).
+    // Only meaningful when packSize > 1; null otherwise.
+    casePrice:     { type: Number, default: null },
+
     reorderLevel:  { type: Number, default: 0 },
 
     // Falls back to product name in the UI when null — matches your mockup
