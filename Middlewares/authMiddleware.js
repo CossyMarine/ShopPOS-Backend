@@ -89,6 +89,10 @@ export const requireOpenShift = async (req, res, next) => {
 export const sameBranch = (req, res, next) => {
   if (req.user?.isAdmin) return next();
 
+  // GET requests (and any request with no body) never get req.body populated
+  // by express.json() — it skips parsing entirely when there's no body to read.
+  req.body = req.body || {};
+
   const targetBranch =
     req.params.branchId || req.body.branch || req.query.branch;
 
