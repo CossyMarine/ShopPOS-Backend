@@ -23,9 +23,7 @@ export const getProducts = async (req, res) => {
 };
 
 // @desc    Look up a single product by barcode — powers the cashier scan input.
-//          Matches either the each barcode or the case barcode (scanning a
-//          case at the till still rings up the product; case-vs-each
-//          quantity handling belongs to receiving, not selling).
+//          Matches either the each barcode or the case barcode.
 // @route   GET /api/products/barcode/:code?branch=<id>
 // @access  Protected — cashier, storekeeper, branchManager, admin
 export const getProductByBarcode = async (req, res) => {
@@ -65,7 +63,7 @@ export const uploadProductImage = async (req, res) => {
 export const createProduct = async (req, res) => {
   try {
     const {
-      name, barcode, category, unit, sellingPrice, reorderLevel,
+      name, barcode, category, unit, sellingPrice, casePrice, reorderLevel,
       packSize, caseLabel, caseBarcode,
       imageUrl, imagePublicId, branch,
     } = req.body;
@@ -82,6 +80,7 @@ export const createProduct = async (req, res) => {
       packSize: resolvedPackSize,
       caseLabel: resolvedPackSize > 1 ? (caseLabel || "Carton") : "Carton",
       caseBarcode: caseBarcode || null,
+      casePrice: resolvedPackSize > 1 && casePrice ? Number(casePrice) : null,
       imageUrl: imageUrl || null, imagePublicId: imagePublicId || null,
       branch, batches: [],
     });
@@ -93,13 +92,13 @@ export const createProduct = async (req, res) => {
   }
 };
 
-// @desc    Update product details (name, price, category, barcode, image, pack size)
+// @desc    Update product details (name, price, category, barcode, image, pack size, case price)
 // @route   PUT /api/products/:id
 // @access  Protected — storekeeper, branchManager, admin
 export const updateProduct = async (req, res) => {
   try {
     const allowed = [
-      "name", "barcode", "category", "unit", "sellingPrice", "reorderLevel",
+      "name", "barcode", "category", "unit", "sellingPrice", "casePrice", "reorderLevel",
       "packSize", "caseLabel", "caseBarcode", "imageUrl", "imagePublicId", "isActive",
     ];
     const updates = {};
@@ -108,6 +107,7 @@ export const updateProduct = async (req, res) => {
     if (updates.packSize !== undefined) {
       updates.packSize = Math.max(1, Math.round(Number(updates.packSize) || 1));
     }
+    if (updates.packSize === 1) updates.casePrice = null;
 
     const existing = await Product.findById(req.params.id);
     if (!existing) return res.status(404).json({ message: "Product not found" });
@@ -133,8 +133,6 @@ export const updateProduct = async (req, res) => {
 //          have to think about cases again.
 // @route   POST /api/products/:id/receive-stock
 // @body    { quantity, costPerUnit, receivedAs?: "case"|"each", expiryDate?, supplierNote? }
-//          receivedAs defaults to "each". quantity/costPerUnit are interpreted
-//          per the chosen mode (cases & cost-per-case, or eaches & cost-per-each).
 // @access  Protected — storekeeper, branchManager, admin
 export const receiveStock = async (req, res) => {
   try {
