@@ -47,7 +47,10 @@ const productImageStorage = new CloudinaryStorage({
   params: {
     folder:          "shoppos/products",
     allowed_formats:  ["jpg", "jpeg", "png", "webp"],
-    transformation:   [{ width: 800, height: 800, crop: "limit" }],
+    transformation:   [
+      { width: 800, height: 800, crop: "fill", gravity: "auto" },
+      { quality: "auto", fetch_format: "auto" },
+    ],
   },
 });
 
