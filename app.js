@@ -17,6 +17,7 @@ import walletRoutes from "./routes/walletRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
 import inventoryRoutes from "./routes/inventoryRoutes.js";
 import customerRoutes from "./routes/customerRoutes.js";
+import orderRoutes from "./routes/orderRoutes.js";
 
 dotenv.config();
 
@@ -67,5 +68,6 @@ app.use("/api/wallet", walletRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/inventory", inventoryRoutes);
 app.use("/api/customer", customerRoutes);
+app.use("/api/orders", orderRoutes);
 
 export default app;
