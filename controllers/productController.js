@@ -15,7 +15,20 @@ export const getProducts = async (req, res) => {
       .populate("unit", "name abbreviation")
       .sort({ category: 1, name: 1 });
 
-    res.json(products);
+    // Cashiers sell strictly at sellingPrice/casePrice — those are set by
+    // storekeeper/branchManager/admin via updateProduct. Batch-level cost
+    // data (costPerUnit, costPerCase) reveals profit margins and has no
+    // business being on a cashier's screen, so it's stripped for them.
+    // currentStock is a virtual derived from batches, computed first via
+    // toObject({ virtuals: true }) before batches gets removed.
+    const isCashier = req.user?.role === "cashier";
+    const payload = products.map((p) => {
+      const obj = p.toObject({ virtuals: true });
+      if (isCashier) delete obj.batches;
+      return obj;
+    });
+
+    res.json(payload);
   } catch (error) {
     console.error("Error fetching products:", error.message);
     res.status(500).json({ message: "Failed to fetch products" });
@@ -37,7 +50,12 @@ export const getProductByBarcode = async (req, res) => {
     const product = await Product.findOne(filter).populate("unit", "name abbreviation");
     if (!product) return res.status(404).json({ message: "Product not found" });
 
-    res.json(product);
+    // Same cost-price stripping as getProducts — cashier only ever needs
+    // sellingPrice/casePrice to ring up an item, never the cost batches.
+    const payload = product.toObject({ virtuals: true });
+    if (req.user?.role === "cashier") delete payload.batches;
+
+    res.json(payload);
   } catch (error) {
     console.error("Error looking up barcode:", error.message);
     res.status(500).json({ message: "Barcode lookup failed" });
