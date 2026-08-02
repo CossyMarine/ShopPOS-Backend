@@ -57,9 +57,12 @@ const productSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Sum of all batch quantities = current stock, always derived, never stale
+// Sum of all batch quantities = current stock, always derived, never stale.
+// Guarded because queries that .select() a subset of fields (e.g. the public
+// catalog) omit `batches` entirely — this.batches is undefined there, and
+// toJSON:{virtuals:true} means this getter still runs on every res.json().
 productSchema.virtual("currentStock").get(function () {
-  return this.batches.reduce((sum, b) => sum + b.quantity, 0);
+  return (this.batches || []).reduce((sum, b) => sum + b.quantity, 0);
 });
 productSchema.set("toJSON", { virtuals: true });
 productSchema.set("toObject", { virtuals: true });
