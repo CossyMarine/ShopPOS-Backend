@@ -521,3 +521,33 @@ export const payCombo = async (req, res) => {
     res.status(400).json({ message: error.message || "Failed to process payment" });
   }
 };
+
+export const getReceiptsTodaySummary = async (req, res) => {
+  try {
+    const { start: startOfDay, end: endOfDay } = getKenyanDayBounds();
+    const branchMatch = req.query.branch
+      ? { branch: new mongoose.Types.ObjectId(req.query.branch) }
+      : {};
+
+    const [paidAgg, unpaidAgg] = await Promise.all([
+      Receipt.aggregate([
+        { $match: { status: "paid", paidAt: { $gte: startOfDay, $lte: endOfDay }, ...branchMatch } },
+        { $group: { _id: null, total: { $sum: "$subtotal" }, count: { $sum: 1 } } },
+      ]),
+      Receipt.aggregate([
+        { $match: { status: { $in: ["unpaid", "partial"] }, createdAt: { $gte: startOfDay, $lte: endOfDay }, ...branchMatch } },
+        { $group: { _id: null, total: { $sum: "$subtotal" }, count: { $sum: 1 } } },
+      ]),
+    ]);
+
+    res.json({
+      paidToday: paidAgg[0]?.total || 0,
+      paidTodayCount: paidAgg[0]?.count || 0,
+      unpaidToday: unpaidAgg[0]?.total || 0,
+      unpaidTodayCount: unpaidAgg[0]?.count || 0,
+    });
+  } catch (error) {
+    console.error("Error fetching today's summary:", error.message);
+    res.status(500).json({ message: "Failed to fetch summary" });
+  }
+};
