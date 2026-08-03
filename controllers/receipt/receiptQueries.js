@@ -59,7 +59,9 @@ export const getPendingOnlineReceipts = async (req, res) => {
 export const getReceiptsTodaySummary = async (req, res) => {
   try {
     const { start: startOfDay, end: endOfDay } = getKenyanDayBounds();
-    const branchMatch = req.query.branch ? { branch: req.query.branch } : {};
+    const branchMatch = req.query.branch
+      ? { branch: new mongoose.Types.ObjectId(req.query.branch) }
+      : {};
 
     const [paidAgg, unpaidAgg] = await Promise.all([
       Receipt.aggregate([
