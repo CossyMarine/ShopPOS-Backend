@@ -15,6 +15,7 @@ import {
   updateUserRole,
   toggleUserStatus,
   updateMe,
+  updateSelectedBranch,
   changePassword,
   forgotPassword,
   resendResetCode,
@@ -35,6 +36,7 @@ router.post("/login", login);
 router.post("/logout", logout);
 router.get("/me", protect, getMe);
 router.patch("/me", protect, updateMe);
+router.patch("/selected-branch", protect, authorize("admin"), updateSelectedBranch);
 router.put("/change-password", protect, changePassword);
 router.get("/check-availability", checkAvailability);
 router.post("/register-customer", registerCustomer);
