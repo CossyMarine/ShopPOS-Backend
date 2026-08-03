@@ -34,6 +34,7 @@ const publicUser = (user) => ({
   isAdmin: user.isAdmin,
   role: user.role,
   branch: user.branch || null,
+  selectedBranch: user.selectedBranch || null,
 });
 
 // Fuller shape for the admin Users panel — includes status + join date + branch
@@ -416,6 +417,36 @@ export const updateMe = async (req, res) => {
     res.json({ user: publicUser(user) });
   } catch (error) {
     console.error("UPDATE ME ERROR:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// @desc    Persist which branch the Super Admin is currently viewing, so it's
+//          restored automatically on next login/refresh — and so anywhere
+//          that adds products/stock knows which branch to save them under.
+// @route   PATCH /api/auth/selected-branch
+// @access  Admin only
+export const updateSelectedBranch = async (req, res) => {
+  try {
+    const { branch } = req.body;
+
+    if (branch) {
+      const Branch = (await import("../models/Branch.js")).default;
+      const exists = await Branch.findById(branch).select("_id");
+      if (!exists) {
+        return res.status(400).json({ message: "Branch not found" });
+      }
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { selectedBranch: branch || null },
+      { new: true }
+    );
+
+    res.json({ user: publicUser(user) });
+  } catch (error) {
+    console.error("UPDATE SELECTED BRANCH ERROR:", error);
     res.status(500).json({ message: "Server error" });
   }
 };
