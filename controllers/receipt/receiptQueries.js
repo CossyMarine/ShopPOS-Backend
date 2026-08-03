@@ -1,4 +1,5 @@
 // controllers/receipt/receiptQueries.js
+import mongoose from "mongoose";
 import Receipt from "../../models/Receipt.js";
 import { getKenyanDayBounds } from "../../utils/dateHelpers.js";
 
