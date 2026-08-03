@@ -2,7 +2,7 @@
 import Receipt from "../../models/Receipt.js";
 import Order from "../../models/Order.js";
 import Product from "../../models/Product.js";
-import { deductStockFIFO } from "../../utils/productStock.js";
+import { deductStockFIFO, restockItems } from "../../utils/productStock.js";
 
 // @desc    Add items to an unpaid bill — e.g. a held/parked sale the cashier
 //          is resuming, or a correction before the customer pays. Deducts
@@ -70,6 +70,47 @@ export const addItemsToReceipt = async (req, res) => {
   } catch (error) {
     console.error("Error adding items to receipt:", error.message);
     res.status(500).json({ message: "Failed to add items", error: error.message });
+  }
+};
+
+// @desc    Cancel a bill that was started but never paid — e.g. the cashier
+//          closed the payment popup, or the browser tab/window was closed,
+//          before any money changed hands. Restocks every line and marks
+//          both the receipt and its order as voided/cancelled. Only allowed
+//          while status is "unpaid" and nothing has been paid yet — once
+//          even a partial payment lands, this must go through the
+//          manager-approved void-request flow instead.
+// @route   POST /api/receipts/:id/cancel
+// @access  Protected — cashier, branchManager, admin
+export const cancelUnpaidReceipt = async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const receipt = await Receipt.findById(id);
+    if (!receipt) return res.status(404).json({ message: "Receipt not found" });
+
+    if (receipt.status !== "unpaid" || (receipt.amountPaid && receipt.amountPaid > 0)) {
+      return res.status(400).json({
+        message: "Only a fully-unpaid bill can be cancelled this way — use a void request instead",
+      });
+    }
+
+    await restockItems(receipt.items, `Cancelled before payment — bill ${receipt.billId}`, req.user?._id || null);
+
+    receipt.status = "voided";
+    receipt.voidReason = "Checkout abandoned before payment";
+    await receipt.save();
+
+    await Order.findByIdAndUpdate(receipt.order, { status: "cancelled", cancelledAt: new Date() });
+
+    const io = req.app.get("io");
+    io.to(`branch:${receipt.branch}`).emit("receipt:voided", receipt);
+    io.to(`branch:${receipt.branch}`).emit("sale:cancelled", { receiptId: receipt._id, orderId: receipt.order });
+
+    res.json({ message: "Checkout cancelled and stock restored" });
+  } catch (error) {
+    console.error("Error cancelling unpaid receipt:", error.message);
+    res.status(500).json({ message: "Failed to cancel checkout", error: error.message });
   }
 };
 
