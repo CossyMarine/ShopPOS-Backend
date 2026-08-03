@@ -42,6 +42,7 @@ const userSchema = new mongoose.Schema(
     // Null for Super Admin (sees every branch) and for customers.
     // Required in practice for cashier/storekeeper/branchManager.
     branch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch", default: null },
+    selectedBranch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch", default: null },
 
     // Reward/cashback points balance — only meaningful for role: "customer"
     walletPoints: { type: Number, default: 0 },
