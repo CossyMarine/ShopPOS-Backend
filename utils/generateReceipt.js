@@ -2,6 +2,7 @@
 import Counter from "../models/Counter.js";
 import Receipt from "../models/Receipt.js";
 import Shift from "../models/Shift.js";
+import User from "../models/User.js";
 
 export const generateReceiptForOrder = async (order, { customer } = {}) => {
   const counter = await Counter.findOneAndUpdate(
@@ -11,15 +12,17 @@ export const generateReceiptForOrder = async (order, { customer } = {}) => {
   );
   const billId = `#B${counter.seq.toString().padStart(4, "0")}`;
 
-  // Order.cashier is a direct ObjectId now — no name lookup needed
   const openShift = await Shift.findOne({ openedBy: order.cashier, status: "open" });
+
+  // Order only stores the cashier's ObjectId now — resolve the actual name here
+  const cashierUser = await User.findById(order.cashier).select("fullName");
 
   const receipt = await Receipt.create({
     billId,
     order: order._id,
     shift: openShift ? openShift._id : null,
     branch: order.branch,
-    cashierName: order.cashierName || null,
+    cashierName: cashierUser?.fullName || "Unknown",
     source: order.source || "staff",
     items: order.items,
     subtotal: order.subtotal,
