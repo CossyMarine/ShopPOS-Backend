@@ -23,7 +23,7 @@ export {
   getReceiptHistoryByCashier,
 } from "./receipt/receiptQueries.js";
 
-export { addItemsToReceipt, markReceiptPrinted } from "./receipt/receiptManagement.js";
+export { addItemsToReceipt, markReceiptPrinted , cancelUnpaidReceipt} from "./receipt/receiptManagement.js";
 
 // ============================================================
 // CASH PAYMENT
