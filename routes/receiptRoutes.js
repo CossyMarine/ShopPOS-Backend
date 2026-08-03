@@ -13,6 +13,7 @@ import {
   getReceiptsTodaySummary,
   getReceiptsByCashier,
   getReceiptById,
+  getReceiptHistory,
   getReceiptHistoryByCashier,
   addItemsToReceipt,
   markReceiptPrinted,
@@ -45,6 +46,8 @@ router.get("/online-pending", protect, posStaff, sameBranch, getPendingOnlineRec
 
 router.get("/cashier/:name/history", protect, getReceiptHistoryByCashier);
 router.get("/cashier/:name", protect, getReceiptsByCashier);
+router.get("/history", protect, posStaff, getReceiptHistory);
+
 router.get("/:id", protect, getReceiptById);
 
 export default router;
