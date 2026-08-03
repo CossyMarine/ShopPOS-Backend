@@ -17,6 +17,7 @@ import {
   getReceiptHistoryByCashier,
   addItemsToReceipt,
   markReceiptPrinted,
+  cancelUnpaidReceipt,
   getPendingOnlineReceipts,
 } from "../controllers/receiptController.js";
 import { protect, authorize, requireOpenShift, sameBranch } from "../Middlewares/authMiddleware.js";
@@ -38,6 +39,10 @@ router.post("/mpesa/callback", mpesaCallback);
 
 router.patch("/:id/items", protect, posStaff, addItemsToReceipt);
 router.patch("/:id/print", protect, markReceiptPrinted);
+
+// Abandoned checkout — cashier closed the payment popup, or the tab/window
+// was closed, before any payment landed. Restocks and voids the bill.
+router.post("/:id/cancel", protect, posStaff, cancelUnpaidReceipt);
 
 router.get("/", protect, posStaff, sameBranch, getReceipts);
 router.get("/paid", protect, authorize("branchManager", "admin"), sameBranch, getPaidReceipts);
