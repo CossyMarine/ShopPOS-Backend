@@ -22,6 +22,7 @@ import attendanceRoutes from "./routes/attendanceRoutes.js";
 import leaveRoutes from "./routes/leaveRoutes.js";
 import payrollRoutes from "./routes/payrollRoutes.js"
 import wageRoutes from "./routes/wageRoutes.js";
+import deductionRoutes from "./routes/deductionRoutes.js";
 
 dotenv.config();
 
@@ -77,5 +78,6 @@ app.use("/api/attendance", attendanceRoutes);
 app.use("/api/leave", leaveRoutes);
 app.use("/api/payroll", payrollRoutes);
 app.use("/api/wages", wageRoutes);
+app.use("/api/deductions", deductionRoutes);
 
 export default app;
