@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import Receipt from "../models/Receipt.js";
 import Product from "../models/Product.js";
 import { getKenyanDayBounds, getKenyanMonthBounds } from "../utils/dateHelpers.js";
+import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
 
 // "1st", "2nd", "3rd", "12th", "21st" ...
 const ordinal = (n) => {
@@ -18,6 +19,8 @@ const ordinal = (n) => {
 // @access  Public
 export const getTodayRevenue = async (req, res) => {
   try {
+    logStart("revenue", "Loading today's revenue", { branch: req.query.branch || "all" });
+
     const { start: startOfDay, end: endOfDay } = getKenyanDayBounds();
     const branchMatch = req.query.branch ? { branch: new mongoose.Types.ObjectId(req.query.branch) } : {};
 
@@ -40,12 +43,13 @@ export const getTodayRevenue = async (req, res) => {
 
     const data = result[0] || { totalRevenue: 0, paidReceiptsCount: 0 };
 
+    logSuccess("revenue", "Today's revenue loaded", data);
     res.json({
       totalRevenue: data.totalRevenue,
       paidReceiptsCount: data.paidReceiptsCount,
     });
   } catch (error) {
-    console.error("Error fetching today's revenue:", error.message);
+    logError("revenue", "Error fetching today's revenue", error);
     res.status(500).json({ message: "Failed to fetch revenue data", error: error.message });
   }
 };
@@ -57,6 +61,8 @@ export const getTodayRevenue = async (req, res) => {
 // @access  Protected — admin, branchManager (auto-scoped via sameBranch)
 export const getRevenueSummary = async (req, res) => {
   try {
+    logStart("revenue", "Loading revenue summary", { branch: req.query.branch || "all" });
+
     const branchMatch = req.query.branch ? { branch: new mongoose.Types.ObjectId(req.query.branch) } : {};
 
     const result = await Receipt.aggregate([
@@ -73,13 +79,14 @@ export const getRevenueSummary = async (req, res) => {
     const totalReceipts = await Receipt.countDocuments(branchMatch);
     const data = result[0] || { totalRevenue: 0, totalPaidReceipts: 0 };
 
+    logSuccess("revenue", "Revenue summary loaded", { ...data, totalReceipts });
     res.json({
       totalRevenue: data.totalRevenue,
       totalPaidReceipts: data.totalPaidReceipts,
       totalReceipts,
     });
   } catch (error) {
-    console.error("Error fetching revenue summary:", error.message);
+    logError("revenue", "Error fetching revenue summary", error);
     res.status(500).json({ message: "Failed to fetch revenue summary", error: error.message });
   }
 };
@@ -104,6 +111,8 @@ export const getRevenueSummary = async (req, res) => {
 // @access  Protected — admin, branchManager
 export const getDashboardStats = async (req, res) => {
   try {
+    logStart("revenue", "Loading dashboard stats", { branch: req.query.branch || "all" });
+
     const { start: startOfDay, end: endOfDay } = getKenyanDayBounds();
     const { start: startOfMonth, end: endOfMonth } = getKenyanMonthBounds();
     const branchMatch = req.query.branch ? { branch: new mongoose.Types.ObjectId(req.query.branch) } : {};
@@ -301,6 +310,13 @@ export const getDashboardStats = async (req, res) => {
 
     const voided = voidedAgg[0] || { amount: 0, count: 0 };
 
+    logSuccess("revenue", "Dashboard stats loaded", {
+      monthRevenue: monthTotal.totalRevenue,
+      lowStockCount: lowStockAgg[0]?.count || 0,
+      netProfit,
+      voidedTodayCount: voided.count,
+    });
+
     res.json({
       dailyTrend,
       monthRevenue: monthTotal.totalRevenue,
@@ -313,7 +329,7 @@ export const getDashboardStats = async (req, res) => {
       voidedToday: { amount: voided.amount, count: voided.count },
     });
   } catch (error) {
-    console.error("Error fetching dashboard stats:", error.message);
+    logError("revenue", "Error fetching dashboard stats", error);
     res.status(500).json({ message: "Failed to fetch dashboard stats", error: error.message });
   }
 };
