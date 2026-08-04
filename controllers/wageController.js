@@ -1,6 +1,7 @@
 // controllers/wageController.js
 import WageProfile from "../models/WageProfile.js";
 import User from "../models/User.js";
+import { getAvailableDeductionsForUser } from "./payrollController.js";
 
 export const getWageProfile = async (req, res) => {
   try {
@@ -11,6 +12,24 @@ export const getWageProfile = async (req, res) => {
   }
 };
 
+// NEW — the "menu" of deductions to show under the Apply statutory
+// deductions toggle: the built-in statutory levy + every custom Deduction
+// that applies to this specific user. Frontend defaults to all of them
+// selected when selectedDeductions is empty on the profile.
+export const getDeductionOptions = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!req.user.isAdmin && String(user.branch) !== String(req.user.branch)) {
+      return res.status(403).json({ message: "You can only view deductions for your own branch" });
+    }
+    const options = await getAvailableDeductionsForUser(user);
+    res.json(options);
+  } catch (error) {
+    res.status(500).json({ message: "Failed to load deduction options", error: error.message });
+  }
+};
+
 export const upsertWageProfile = async (req, res) => {
   const { userId } = req.params;
   const {
@@ -18,7 +37,9 @@ export const upsertWageProfile = async (req, res) => {
     dailyRateWeekday, dailyRateWeekend,
     monthlySalary, commissionRate,
     paymentMethod, applyStatutoryDeductions,
-    noSalary, // NEW
+    selectedDeductions, // NEW
+    nextPayoutDate,     // NEW
+    noSalary,
   } = req.body;
 
   if (!["hourly", "daily", "monthly"].includes(wageType)) {
@@ -44,7 +65,9 @@ export const upsertWageProfile = async (req, res) => {
       commissionRate: commissionRate || 0,
       paymentMethod: paymentMethod || "mpesa",
       applyStatutoryDeductions: applyStatutoryDeductions !== false,
-      noSalary: !!noSalary, // NEW
+      selectedDeductions: Array.isArray(selectedDeductions) ? selectedDeductions : [],
+      nextPayoutDate: nextPayoutDate || null,
+      noSalary: !!noSalary,
       updatedBy: req.user._id,
     };
 
