@@ -2,6 +2,7 @@
 import mongoose from "mongoose";
 import Receipt from "../../models/Receipt.js";
 import { getKenyanDayBounds } from "../../utils/dateHelpers.js";
+import { logStart, logSuccess, logError } from "../../utils/requestLogger.js";
 
 // @desc    Get all unpaid or partially-paid receipts for a branch
 //          (Super Admin can omit ?branch= to see every branch)
@@ -9,13 +10,17 @@ import { getKenyanDayBounds } from "../../utils/dateHelpers.js";
 // @access  Protected — cashier, branchManager, admin (auto-scoped via sameBranch)
 export const getReceipts = async (req, res) => {
   try {
+    logStart("receiptQuery", "Loading unpaid/partial receipts", { branch: req.query.branch || "all" });
+
     const filter = { status: { $in: ["unpaid", "partial"] } };
     if (req.query.branch) filter.branch = req.query.branch;
 
     const receipts = await Receipt.find(filter).sort({ createdAt: -1 });
+
+    logSuccess("receiptQuery", "Receipts loaded", { count: receipts.length });
     res.json(receipts);
   } catch (error) {
-    console.error("Error fetching receipts:", error.message);
+    logError("receiptQuery", "Error fetching receipts", error);
     res.status(500).json({ message: "Failed to fetch receipts" });
   }
 };
@@ -25,13 +30,17 @@ export const getReceipts = async (req, res) => {
 // @access  Protected — branchManager, admin
 export const getPaidReceipts = async (req, res) => {
   try {
+    logStart("receiptQuery", "Loading paid receipts", { branch: req.query.branch || "all" });
+
     const filter = { status: "paid" };
     if (req.query.branch) filter.branch = req.query.branch;
 
     const receipts = await Receipt.find(filter).sort({ paidAt: -1 }).limit(200);
+
+    logSuccess("receiptQuery", "Paid receipts loaded", { count: receipts.length });
     res.json(receipts);
   } catch (error) {
-    console.error("Error fetching paid receipts:", error.message);
+    logError("receiptQuery", "Error fetching paid receipts", error);
     res.status(500).json({ message: "Failed to fetch paid receipts" });
   }
 };
@@ -43,13 +52,17 @@ export const getPaidReceipts = async (req, res) => {
 // @access  Protected — cashier, branchManager, admin
 export const getPendingOnlineReceipts = async (req, res) => {
   try {
+    logStart("receiptQuery", "Loading pending online receipts", { branch: req.query.branch || "all" });
+
     const filter = { source: "online", status: { $in: ["unpaid", "partial"] } };
     if (req.query.branch) filter.branch = req.query.branch;
 
     const receipts = await Receipt.find(filter).sort({ createdAt: 1 });
+
+    logSuccess("receiptQuery", "Pending online receipts loaded", { count: receipts.length });
     res.json(receipts);
   } catch (error) {
-    console.error("Error fetching pending online receipts:", error.message);
+    logError("receiptQuery", "Error fetching pending online receipts", error);
     res.status(500).json({ message: "Failed to fetch pending online receipts" });
   }
 };
@@ -59,6 +72,8 @@ export const getPendingOnlineReceipts = async (req, res) => {
 // @access  Protected — cashier, branchManager, admin
 export const getReceiptsTodaySummary = async (req, res) => {
   try {
+    logStart("receiptQuery", "Loading today's receipt summary", { branch: req.query.branch || "all" });
+
     const { start: startOfDay, end: endOfDay } = getKenyanDayBounds();
     const branchMatch = req.query.branch
       ? { branch: new mongoose.Types.ObjectId(req.query.branch) }
@@ -75,14 +90,17 @@ export const getReceiptsTodaySummary = async (req, res) => {
       ]),
     ]);
 
-    res.json({
+    const summary = {
       paidToday: paidAgg[0]?.total || 0,
       paidTodayCount: paidAgg[0]?.count || 0,
       unpaidToday: unpaidAgg[0]?.total || 0,
       unpaidTodayCount: unpaidAgg[0]?.count || 0,
-    });
+    };
+
+    logSuccess("receiptQuery", "Today's summary loaded", summary);
+    res.json(summary);
   } catch (error) {
-    console.error("Error fetching today's summary:", error.message);
+    logError("receiptQuery", "Error fetching today's summary", error);
     res.status(500).json({ message: "Failed to fetch summary" });
   }
 };
@@ -93,12 +111,16 @@ export const getReceiptsTodaySummary = async (req, res) => {
 export const getReceiptsByCashier = async (req, res) => {
   try {
     const { name } = req.params;
+    logStart("receiptQuery", "Loading receipts by cashier", { cashierName: name });
+
     const receipts = await Receipt.find({ cashierName: name, status: { $in: ["unpaid", "partial"] } }).sort({
       createdAt: -1,
     });
+
+    logSuccess("receiptQuery", "Receipts by cashier loaded", { cashierName: name, count: receipts.length });
     res.json(receipts);
   } catch (error) {
-    console.error("Error fetching receipts by cashier:", error.message);
+    logError("receiptQuery", "Error fetching receipts by cashier", error);
     res.status(500).json({ message: "Failed to fetch receipts" });
   }
 };
@@ -108,15 +130,22 @@ export const getReceiptsByCashier = async (req, res) => {
 // @access  Protected
 export const getReceiptById = async (req, res) => {
   try {
+    logStart("receiptQuery", "Loading receipt by id", { receiptId: req.params.id });
+
     const receipt = await Receipt.findById(req.params.id)
       .populate("payments.paidBy", "fullName email phone isAdmin role")
       .populate("pendingManualPayments.paidBy", "fullName email phone isAdmin role")
       .populate("customer", "fullName email phone role")
       .populate("branch", "name");
-    if (!receipt) return res.status(404).json({ message: "Receipt not found" });
+    if (!receipt) {
+      console.warn(`[receiptQuery] ⚠️ Receipt not found: ${req.params.id}`);
+      return res.status(404).json({ message: "Receipt not found" });
+    }
+
+    logSuccess("receiptQuery", "Receipt loaded", { receiptId: req.params.id, status: receipt.status });
     res.json(receipt);
   } catch (error) {
-    console.error("Error fetching receipt:", error.message);
+    logError("receiptQuery", "Error fetching receipt", error);
     res.status(500).json({ message: "Failed to fetch receipt" });
   }
 };
@@ -132,6 +161,8 @@ export const getReceiptHistory = async (req, res) => {
     const limit = Math.max(1, parseInt(req.query.limit) || 10);
     const q = (req.query.q || "").trim();
     const { from, to, branch } = req.query;
+
+    logStart("receiptQuery", "Loading bill history", { page, limit, q, from, to, branch });
 
     const filter = {};
     if (branch) filter.branch = branch;
@@ -155,6 +186,7 @@ export const getReceiptHistory = async (req, res) => {
       .skip((page - 1) * limit)
       .limit(limit);
 
+    logSuccess("receiptQuery", "Bill history loaded", { total, returned: receipts.length, page });
     res.json({
       receipts,
       page,
@@ -163,7 +195,7 @@ export const getReceiptHistory = async (req, res) => {
       totalPages: Math.max(1, Math.ceil(total / limit)),
     });
   } catch (error) {
-    console.error("Error fetching bill history:", error.message);
+    logError("receiptQuery", "Error fetching bill history", error);
     res.status(500).json({ message: "Failed to fetch bill history" });
   }
 };
@@ -178,6 +210,8 @@ export const getReceiptHistoryByCashier = async (req, res) => {
     const limit = Math.max(1, parseInt(req.query.limit) || 4);
     const q = (req.query.q || "").trim();
     const { from, to } = req.query;
+
+    logStart("receiptQuery", "Loading bill history by cashier", { cashierName: name, page, limit, q, from, to });
 
     const filter = { cashierName: name };
     if (q) {
@@ -196,6 +230,7 @@ export const getReceiptHistoryByCashier = async (req, res) => {
       .skip((page - 1) * limit)
       .limit(limit);
 
+    logSuccess("receiptQuery", "Bill history by cashier loaded", { cashierName: name, total, returned: receipts.length, page });
     res.json({
       receipts,
       page,
@@ -204,7 +239,7 @@ export const getReceiptHistoryByCashier = async (req, res) => {
       totalPages: Math.max(1, Math.ceil(total / limit)),
     });
   } catch (error) {
-    console.error("Error fetching bill history:", error.message);
+    logError("receiptQuery", "Error fetching bill history", error);
     res.status(500).json({ message: "Failed to fetch bill history" });
   }
 };
