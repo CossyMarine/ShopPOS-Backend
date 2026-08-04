@@ -2,6 +2,7 @@
 // Powers the admin/branch "Payments" page: a flat, filterable/searchable feed of every
 // payment ever recorded (cash, till, STK, reward...) plus the queue of
 // customer-submitted manual-till payments still waiting for staff confirmation.
+import mongoose from "mongoose";
 import Receipt from "../models/Receipt.js";
 import { applyPaymentToReceipt } from "../utils/walletPayments.js";
 import { getDateRangePreset } from "../utils/dateHelpers.js";
