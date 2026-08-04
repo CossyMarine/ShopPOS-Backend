@@ -33,6 +33,7 @@ const publicUser = (user) => ({
   phone: user.phone || null,
   isAdmin: user.isAdmin,
   role: user.role,
+  jobTitle: user.jobTitle || null,
   branch: user.branch || null,
   selectedBranch: user.selectedBranch || null,
 });
@@ -45,12 +46,14 @@ const adminUserView = (user) => ({
   phone: user.phone || null,
   isAdmin: user.isAdmin,
   role: user.role,
+  jobTitle: user.jobTitle || null,
   branch: user.branch || null,
   isActive: user.isActive,
   createdAt: user.createdAt,
 });
 
 const STAFF_ROLES = ["cashier", "storekeeper", "branchManager", "staff"];
+const STAFF_ROLES_LABEL = "cashier, storekeeper, branchManager, or staff";
 
 // ======================= LOGIN =======================
 // @desc    Authenticate any user (customer, cashier, storekeeper, branchManager, admin)
@@ -187,7 +190,7 @@ export const registerCustomer = async (req, res) => {
 // @access  Protected — admin
 export const createUser = async (req, res) => {
   try {
-    let { fullName, method, contact, password, isAdmin, role, branch } = req.body;
+    let { fullName, method, contact, password, isAdmin, role, branch, jobTitle } = req.body;
 
     if (!fullName || !method || !contact || !password) {
       return res.status(400).json({ message: "All fields are required" });
@@ -197,7 +200,7 @@ export const createUser = async (req, res) => {
     }
     if (!isAdmin) {
       if (!STAFF_ROLES.includes(role)) {
-        return res.status(400).json({ message: "Choose a role: cashier, storekeeper, or branchManager" });
+        return res.status(400).json({ message: `Choose a role: ${STAFF_ROLES_LABEL}` });
       }
       if (!branch) {
         return res.status(400).json({ message: "A branch is required for this role" });
@@ -221,6 +224,7 @@ export const createUser = async (req, res) => {
       isAdmin: !!isAdmin,
       role: isAdmin ? "customer" : role,
       branch: isAdmin ? null : branch,
+      jobTitle: !isAdmin && role === "staff" ? (jobTitle?.trim() || null) : null,
       [method]: cleanContact,
     });
 
@@ -303,13 +307,13 @@ export const getStaffCount = async (req, res) => {
 // @desc    Promote/change a user's role — works for staff AND customers,
 //          so a normal customer account can be promoted to staff/admin.
 //          Body: { isAdmin: true } -> full Super Admin
-//          Body: { role: "cashier" | "storekeeper" | "branchManager", branch } -> staff role
+//          Body: { role: "cashier" | "storekeeper" | "branchManager" | "staff", branch, jobTitle } -> staff role
 // @route   PATCH /api/auth/users/:id/role
 // @access  Protected — admin
 export const updateUserRole = async (req, res) => {
   try {
     const { id } = req.params;
-    const { isAdmin, role, branch } = req.body;
+    const { isAdmin, role, branch, jobTitle } = req.body;
 
     if (req.user._id.toString() === id) {
       return res.status(400).json({ message: "You can't change your own role" });
@@ -323,9 +327,10 @@ export const updateUserRole = async (req, res) => {
     if (isAdmin) {
       user.isAdmin = true;
       user.branch = null;
+      user.jobTitle = null;
     } else {
       if (!STAFF_ROLES.includes(role)) {
-        return res.status(400).json({ message: "Choose a role: cashier, storekeeper, or branchManager" });
+        return res.status(400).json({ message: `Choose a role: ${STAFF_ROLES_LABEL}` });
       }
       if (!branch) {
         return res.status(400).json({ message: "A branch is required for this role" });
@@ -333,6 +338,7 @@ export const updateUserRole = async (req, res) => {
       user.isAdmin = false;
       user.role = role;
       user.branch = branch;
+      user.jobTitle = role === "staff" ? (jobTitle?.trim() || null) : null;
     }
 
     await user.save();
