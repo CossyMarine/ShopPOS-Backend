@@ -18,10 +18,14 @@ const wageProfileSchema = new mongoose.Schema(
 
     // monthly
     monthlySalary: { type: Number, default: 0 },
-    commissionRate: { type: Number, default: 0 }, // percent, monthly wage type only
+    commissionRate: { type: Number, default: 0 },
 
     paymentMethod: { type: String, enum: ["mpesa", "bank", "cash"], default: "mpesa" },
     applyStatutoryDeductions: { type: Boolean, default: true },
+
+    // NEW — unpaid staff (family member, attachment/intern, etc.). When true,
+    // payroll always returns 0 regardless of rates set above.
+    noSalary: { type: Boolean, default: false },
 
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   },
