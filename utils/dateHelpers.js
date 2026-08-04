@@ -89,3 +89,19 @@ export const getDateRangePreset = (preset) => {
 
   return { startDate: start, endDate: end };
 };
+
+// Start (1st of the month, 00:00:00.000) through the end of "now"
+// (23:59:59.999 today) — anchored to Kenya's wall clock. Using "end of
+// today" instead of "end of month" means today's sales are naturally
+// included as the month progresses, without pulling in future days.
+export const getKenyanMonthBounds = () => {
+  const now = getKenyanDate();
+
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  start.setHours(0, 0, 0, 0);
+
+  const end = new Date(now);
+  end.setHours(23, 59, 59, 999);
+
+  return { start, end };
+};
