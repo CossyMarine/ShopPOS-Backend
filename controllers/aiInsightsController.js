@@ -10,7 +10,7 @@ import WageProfile from "../models/WageProfile.js";
 import { getKenyanDayBounds } from "../utils/dateHelpers.js";
 
 // Override with GEMINI_MODEL in .env if you want a different model.
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
 const stockOf = (product) =>
   (product.batches || []).reduce((sum, b) => sum + b.quantity, 0);
