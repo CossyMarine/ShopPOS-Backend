@@ -50,7 +50,7 @@ const adminUserView = (user) => ({
   createdAt: user.createdAt,
 });
 
-const STAFF_ROLES = ["cashier", "storekeeper", "branchManager"];
+const STAFF_ROLES = ["cashier", "storekeeper", "branchManager", "staff"];
 
 // ======================= LOGIN =======================
 // @desc    Authenticate any user (customer, cashier, storekeeper, branchManager, admin)
