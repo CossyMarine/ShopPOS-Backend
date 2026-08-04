@@ -1,5 +1,6 @@
 // controllers/leaveController.js
 import LeaveRequest from "../models/LeaveRequest.js";
+import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
 
 // @desc    Request leave (self-service — any staff/storekeeper/cashier/branchManager)
 // @route   POST /api/leave
@@ -22,6 +23,8 @@ export const requestLeave = async (req, res) => {
   }
 
   try {
+    logStart("leave", "Requesting leave", { user, type, from, to });
+
     const leave = await LeaveRequest.create({
       user, branch: req.user.branch, type, from, to, reason: reason?.trim() || null,
     });
@@ -29,9 +32,10 @@ export const requestLeave = async (req, res) => {
     const io = req.app.get("io");
     io.to(`branch:${req.user.branch}`).emit("leave:requested", leave);
 
+    logSuccess("leave", "Leave requested", { leaveId: leave._id });
     res.status(201).json(leave);
   } catch (error) {
-    console.error("Error requesting leave:", error.message);
+    logError("leave", "Error requesting leave", error);
     res.status(500).json({ message: "Failed to request leave", error: error.message });
   }
 };
@@ -41,9 +45,12 @@ export const requestLeave = async (req, res) => {
 // @access  Protected
 export const getMyLeave = async (req, res) => {
   try {
+    logStart("leave", "Loading my leave requests", { user: req.user._id });
     const leaves = await LeaveRequest.find({ user: req.user._id }).sort({ createdAt: -1 });
+    logSuccess("leave", "My leave requests loaded", { count: leaves.length });
     res.json(leaves);
   } catch (error) {
+    logError("leave", "Error loading my leave requests", error);
     res.status(500).json({ message: "Failed to load leave requests", error: error.message });
   }
 };
@@ -53,17 +60,26 @@ export const getMyLeave = async (req, res) => {
 // @access  Protected — must be your own, and still pending
 export const cancelLeave = async (req, res) => {
   try {
+    logStart("leave", "Cancelling leave request", { leaveId: req.params.id });
+
     const leave = await LeaveRequest.findById(req.params.id);
-    if (!leave) return res.status(404).json({ message: "Leave request not found" });
+    if (!leave) {
+      console.warn(`[leave] ⚠️ Leave request not found: ${req.params.id}`);
+      return res.status(404).json({ message: "Leave request not found" });
+    }
     if (String(leave.user) !== String(req.user._id)) {
+      console.warn(`[leave] ⚠️ Ownership mismatch — requester=${req.user._id}, owner=${leave.user}`);
       return res.status(403).json({ message: "This isn't your leave request" });
     }
     if (leave.status !== "pending") {
+      console.warn(`[leave] ⚠️ Cannot cancel — status is already "${leave.status}"`);
       return res.status(400).json({ message: "Only pending requests can be cancelled" });
     }
     await leave.deleteOne();
+    logSuccess("leave", "Leave request cancelled", { leaveId: req.params.id });
     res.json({ message: "Leave request cancelled" });
   } catch (error) {
+    logError("leave", "Error cancelling leave request", error);
     res.status(500).json({ message: "Failed to cancel leave request", error: error.message });
   }
 };
@@ -73,13 +89,18 @@ export const cancelLeave = async (req, res) => {
 // @access  Protected — admin, branchManager
 export const getPendingLeave = async (req, res) => {
   try {
+    logStart("leave", "Loading pending leave queue", { branch: req.query.branch || "all" });
+
     const query = { status: "pending" };
     if (req.query.branch) query.branch = req.query.branch;
     const leaves = await LeaveRequest.find(query)
       .populate("user", "fullName role jobTitle")
       .sort({ createdAt: 1 });
+
+    logSuccess("leave", "Pending leave queue loaded", { count: leaves.length });
     res.json(leaves);
   } catch (error) {
+    logError("leave", "Error loading pending leave", error);
     res.status(500).json({ message: "Failed to load pending leave", error: error.message });
   }
 };
@@ -94,9 +115,15 @@ export const decideLeave = async (req, res) => {
   }
 
   try {
+    logStart("leave", "Deciding leave request", { leaveId: req.params.id, decision });
+
     const leave = await LeaveRequest.findById(req.params.id);
-    if (!leave) return res.status(404).json({ message: "Leave request not found" });
+    if (!leave) {
+      console.warn(`[leave] ⚠️ Leave request not found: ${req.params.id}`);
+      return res.status(404).json({ message: "Leave request not found" });
+    }
     if (leave.status !== "pending") {
+      console.warn(`[leave] ⚠️ Already decided — status is "${leave.status}"`);
       return res.status(400).json({ message: "This request has already been decided" });
     }
 
@@ -109,8 +136,10 @@ export const decideLeave = async (req, res) => {
     const io = req.app.get("io");
     io.to(`branch:${leave.branch}`).emit("leave:decided", leave);
 
+    logSuccess("leave", "Leave request decided", { leaveId: leave._id, decision });
     res.json(leave);
   } catch (error) {
+    logError("leave", "Error deciding leave request", error);
     res.status(500).json({ message: "Failed to decide leave request", error: error.message });
   }
 };
