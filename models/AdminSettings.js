@@ -20,6 +20,9 @@ const adminSettingsSchema = new mongoose.Schema(
     // Singleton lock — only one document ever exists
     key: { type: String, default: "global", unique: true },
 
+     // Shown on printed barcode labels, receipts, etc
+    storeName: { type: String, default: "My Store" },
+
     // Manual till shown to customers who pay via "Till" instead of STK
     tillNumber: { type: String, default: null },
     tillName: { type: String, default: null },
