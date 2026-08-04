@@ -11,6 +11,7 @@ import {
   computeNetPay,
   estimateMonthlyGross,
 } from "./payrollController.js";
+import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
 
 const currentPeriod = () => {
   const d = new Date();
@@ -22,11 +23,17 @@ const currentPeriod = () => {
 // for everyone else), leave, full payslip history, a preview of what the
 // current/next payslip would look like, and the deduction menu for editing.
 export const getStaffOverview = async (req, res) => {
+  const { userId } = req.params;
   try {
-    const { userId } = req.params;
+    logStart("staff", "Loading staff overview", { userId });
+
     const user = await User.findById(userId).populate("branch", "name");
-    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user) {
+      console.warn(`[staff] ⚠️ User not found: ${userId}`);
+      return res.status(404).json({ message: "User not found" });
+    }
     if (!req.user.isAdmin && String(user.branch?._id || user.branch) !== String(req.user.branch)) {
+      console.warn(`[staff] ⚠️ Branch mismatch — requester=${req.user.branch}, target=${user.branch?._id || user.branch}`);
       return res.status(403).json({ message: "You can only view staff in your own branch" });
     }
 
@@ -76,6 +83,14 @@ export const getStaffOverview = async (req, res) => {
 
     const deductionOptions = await getAvailableDeductionsForUser(user);
 
+    logSuccess("staff", "Staff overview loaded", {
+      userId,
+      workHistoryCount: workHistory.length,
+      leaveCount: leaveHistory.length,
+      payslipCount: payslipHistory.length,
+      hasWageProfile: Boolean(wage),
+    });
+
     res.json({
       user: {
         _id: user._id,
@@ -98,7 +113,7 @@ export const getStaffOverview = async (req, res) => {
       deductionOptions,
     });
   } catch (error) {
-    console.error("Error loading staff overview:", error.message);
+    logError("staff", "Error loading staff overview", error);
     res.status(500).json({ message: "Failed to load staff overview", error: error.message });
   }
 };
