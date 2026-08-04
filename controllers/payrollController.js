@@ -1,6 +1,7 @@
 // controllers/payrollController.js
 import Payslip from "../models/Payslip.js";
 import WageProfile from "../models/WageProfile.js";
+import Deduction from "../models/Deduction.js";
 import Shift from "../models/Shift.js";
 import Attendance from "../models/Attendance.js";
 import LeaveRequest from "../models/LeaveRequest.js";
@@ -23,9 +24,18 @@ const countBusinessDaysInRange = (leaves, start, end) => {
   return days;
 };
 
-// Pure calculation — same shape as the original HTML mock's calculateNetPay,
-// now driven by real attendance/wage records instead of hardcoded numbers.
-export const computeNetPay = (wage, input) => {
+// Pure calculation. `deductions` = already-filtered active Deduction docs
+// (all-staff + individual ones targeting this user).
+export const computeNetPay = (wage, input, deductions = []) => {
+  if (wage.noSalary) {
+    return {
+      baseEarnings: 0, extraEarnings: 0, commission: 0,
+      leaveDeduction: 0, taxDeductions: 0,
+      customDeductions: [], customDeductionsTotal: 0,
+      netPayable: 0, noSalary: true,
+    };
+  }
+
   let baseEarnings = 0, extraEarnings = 0;
   const commission = input.commission || 0;
 
@@ -52,14 +62,22 @@ export const computeNetPay = (wage, input) => {
     taxDeductions = grossEarnings * 0.12;
   }
 
-  const netPayable = Math.max(0, grossEarnings - taxDeductions);
+  const customDeductions = deductions.map((d) => ({
+    name: d.name,
+    amount: d.calcType === "percentage"
+      ? +(grossEarnings * (d.amount / 100)).toFixed(2)
+      : d.amount,
+  }));
+  const customDeductionsTotal = customDeductions.reduce((sum, d) => sum + d.amount, 0);
 
-  return { baseEarnings, extraEarnings, commission, leaveDeduction, taxDeductions, netPayable };
+  const netPayable = Math.max(0, grossEarnings - taxDeductions - customDeductionsTotal);
+
+  return {
+    baseEarnings, extraEarnings, commission, leaveDeduction, taxDeductions,
+    customDeductions, customDeductionsTotal, netPayable, noSalary: false,
+  };
 };
 
-// @desc    Run (or re-run, while still pending) payroll for one user for a period
-// @route   POST /api/payroll/run
-// @access  Protected — admin, branchManager
 export const runPayrollForUser = async (req, res) => {
   const { userId, period } = req.body;
   if (!userId || !/^\d{4}-\d{2}$/.test(period || "")) {
@@ -103,11 +121,20 @@ export const runPayrollForUser = async (req, res) => {
     const approvedUnpaid = await LeaveRequest.find({ user: userId, type: "unpaid", status: "approved" });
     const unpaidLeaveDays = countBusinessDaysInRange(approvedUnpaid, start, end);
 
-    const commission = wage.wageType === "monthly" && wage.commissionRate
-      ? 0 // hook up to real sales figures here if/when commission tracking exists
-      : 0;
+    const commission = wage.wageType === "monthly" && wage.commissionRate ? 0 : 0;
 
-    const calc = computeNetPay(wage, { hoursWorked, overtimeHours, weekdaysWorked, weekendsWorked, unpaidLeaveDays, commission });
+    // NEW — active deductions that apply to everyone, or specifically to this user
+    const deductions = wage.noSalary ? [] : await Deduction.find({
+      isActive: true,
+      branch: { $in: [null, user.branch] },
+      $or: [{ appliesTo: "all" }, { appliesTo: "individual", users: userId }],
+    });
+
+    const calc = computeNetPay(
+      wage,
+      { hoursWorked, overtimeHours, weekdaysWorked, weekendsWorked, unpaidLeaveDays, commission },
+      deductions
+    );
 
     const payslip = await Payslip.findOneAndUpdate(
       { user: userId, period },
@@ -132,10 +159,6 @@ export const runPayrollForUser = async (req, res) => {
   }
 };
 
-// @desc    Confirm and mark a pending payslip as paid (the actual disbursement
-//          trigger — B2C/bank/cash — is intentionally left as a TODO hook)
-// @route   POST /api/payroll/:id/confirm
-// @access  Protected — admin, branchManager
 export const confirmPayslip = async (req, res) => {
   try {
     const slip = await Payslip.findById(req.params.id);
@@ -152,8 +175,6 @@ export const confirmPayslip = async (req, res) => {
     slip.idempotencyKey = `${slip.user}-${slip.period}`;
     await slip.save();
 
-    // TODO: trigger actual disbursement here (mpesa B2C / bank file / cash log),
-    // then flip status to "paid" (or "failed" on error) and set disbursedAt.
     slip.status = "paid";
     slip.disbursedAt = new Date();
     await slip.save();
@@ -165,9 +186,6 @@ export const confirmPayslip = async (req, res) => {
   }
 };
 
-// @desc    List payslips (admin/branchManager — payroll run screen)
-// @route   GET /api/payroll?period=&branch=
-// @access  Protected — admin, branchManager
 export const listPayslips = async (req, res) => {
   try {
     const query = {};
@@ -182,9 +200,6 @@ export const listPayslips = async (req, res) => {
   }
 };
 
-// @desc    Get the logged-in user's own payslips (self-service, read-only)
-// @route   GET /api/payroll/mine
-// @access  Protected
 export const getMyPayslips = async (req, res) => {
   try {
     const slips = await Payslip.find({ user: req.user._id, status: "paid" }).sort({ period: -1 });
