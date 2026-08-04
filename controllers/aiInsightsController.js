@@ -284,3 +284,38 @@ export const runStoreAudit = async (req, res) => {
       .json({ message: "Failed to run AI store audit", error: error.message });
   }
 };
+
+// @desc    Debug helper — lists every Gemini model available to this API key
+//          and whether it supports generateContent. Hit this once to find
+//          a valid model name, then set GEMINI_MODEL accordingly.
+// @route   GET /api/ai-insights/list-models
+// @access  Protected — admin
+export const listGeminiModels = async (req, res) => {
+  try {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ message: "GEMINI_API_KEY is not set on the server" });
+    }
+
+    const { data } = await axios.get(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`
+    );
+
+    const usable = (data.models || [])
+      .filter((m) => m.supportedGenerationMethods?.includes("generateContent"))
+      .map((m) => ({
+        name: m.name.replace("models/", ""),
+        displayName: m.displayName,
+      }));
+
+    console.log("[aiInsights] Models available for generateContent:", JSON.stringify(usable, null, 2));
+
+    res.json({ count: usable.length, models: usable });
+  } catch (error) {
+    console.error("[aiInsights] ❌ Error listing Gemini models:", error.response?.data || error.message);
+    res.status(error.response?.status || 500).json({
+      message: "Failed to list Gemini models",
+      error: error.response?.data || error.message,
+    });
+  }
+};
