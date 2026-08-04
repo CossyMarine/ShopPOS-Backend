@@ -18,14 +18,31 @@ const wageProfileSchema = new mongoose.Schema(
 
     // monthly
     monthlySalary: { type: Number, default: 0 },
+    // % of this staff member's own attributed sales (Orders where they are
+    // the cashier) for the period. Only ever produces a non-zero commission
+    // for staff who actually ring up sales — see payrollController.
     commissionRate: { type: Number, default: 0 },
 
     paymentMethod: { type: String, enum: ["mpesa", "bank", "cash"], default: "mpesa" },
+
+    // Master switch — when false, NO deductions (statutory or custom) are
+    // taken off this person's pay at all.
     applyStatutoryDeductions: { type: Boolean, default: true },
+
+    // NEW — which deductions apply when the switch above is on.
+    // Empty array = "all available deductions" (the default). Holds either
+    // the literal string "statutory_tax" (the built-in PAYE/NHIF/NSSF-style
+    // flat levy) or a Deduction ObjectId (as a string) for custom ones.
+    selectedDeductions: { type: [String], default: [] },
 
     // NEW — unpaid staff (family member, attachment/intern, etc.). When true,
     // payroll always returns 0 regardless of rates set above.
     noSalary: { type: Boolean, default: false },
+
+    // NEW — editable "next payout" date, shown/edited from the staff detail
+    // page. Purely informational/schedule-tracking — running payroll does
+    // not require this to be set.
+    nextPayoutDate: { type: Date, default: null },
 
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   },
