@@ -5,6 +5,7 @@ import User from "../models/User.js";
 import crypto from "crypto";
 import sendResetEmail from "../utils/sendResetEmail.js";
 import { sendResetCode } from "../utils/sendResetSms.js";
+import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
 
 // ======================= HELPERS =======================
 
@@ -55,6 +56,10 @@ const adminUserView = (user) => ({
 const STAFF_ROLES = ["cashier", "storekeeper", "branchManager", "staff"];
 const STAFF_ROLES_LABEL = "cashier, storekeeper, branchManager, or staff";
 
+// NOTE: none of the logging added below ever prints a password, reset
+// code, reset token, or password hash — only identifiers (email/phone),
+// user ids, and outcome/reason. Keep it that way in any future edits here.
+
 // ======================= LOGIN =======================
 // @desc    Authenticate any user (customer, cashier, storekeeper, branchManager, admin)
 //          by email or phone — cookie-based session: find -> compare password ->
@@ -72,20 +77,25 @@ export const login = async (req, res) => {
     identifier = identifier.trim();
     const value = identifier.toLowerCase();
 
+    logStart("auth", "Login attempt", { identifier });
+
     const user = await User.findOne({
       $or: [{ email: value }, { phone: identifier }],
     });
 
     if (!user) {
+      console.warn(`[auth] ⚠️ Login failed — no account for "${identifier}"`);
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
+      console.warn(`[auth] ⚠️ Login failed — wrong password for user ${user._id}`);
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
     if (!user.isActive) {
+      console.warn(`[auth] ⚠️ Login blocked — account ${user._id} is deactivated`);
       return res.status(403).json({
         message: "Your account has been deactivated. Contact your admin.",
       });
@@ -94,9 +104,10 @@ export const login = async (req, res) => {
     const token = generateToken(user);
     res.cookie("token", token, getCookieOptions());
 
+    logSuccess("auth", "Login successful", { userId: user._id, role: user.role, isAdmin: user.isAdmin });
     res.json({ user: publicUser(user) });
   } catch (error) {
-    console.error("LOGIN ERROR:", error);
+    logError("auth", "Login error", error);
     res.status(500).json({ message: "Server error" });
   }
 };
@@ -106,6 +117,7 @@ export const login = async (req, res) => {
 // @access  Public
 export const logout = async (req, res) => {
   res.clearCookie("token", getCookieOptions());
+  console.log(`[auth] ✅ Logged out${req.user ? ` — user ${req.user._id}` : ""}`);
   res.json({ message: "Logged out" });
 };
 
@@ -132,7 +144,7 @@ export const checkAvailability = async (req, res) => {
 
     res.json({ available: !existing });
   } catch (error) {
-    console.error("CHECK AVAILABILITY ERROR:", error);
+    logError("auth", "Check availability error", error);
     res.status(500).json({ message: "Server error" });
   }
 };
@@ -157,8 +169,11 @@ export const registerCustomer = async (req, res) => {
     fullName = fullName.trim();
     const cleanContact = method === "email" ? contact.toLowerCase().trim() : contact.trim();
 
+    logStart("auth", "Registering customer", { method, contact: cleanContact });
+
     const contactTaken = await User.findOne({ [method]: cleanContact });
     if (contactTaken) {
+      console.warn(`[auth] ⚠️ Registration blocked — ${method} already taken: ${cleanContact}`);
       return res.status(400).json({
         message: method === "email" ? "This email is already registered" : "This phone number is already registered",
       });
@@ -178,9 +193,10 @@ export const registerCustomer = async (req, res) => {
     const token = generateToken(user);
     res.cookie("token", token, getCookieOptions());
 
+    logSuccess("auth", "Customer registered", { userId: user._id, method });
     res.status(201).json({ user: publicUser(user) });
   } catch (error) {
-    console.error("REGISTER CUSTOMER ERROR:", error);
+    logError("auth", "Register customer error", error);
     res.status(500).json({ message: "Server error" });
   }
 };
@@ -210,8 +226,11 @@ export const createUser = async (req, res) => {
     fullName = fullName.trim();
     const cleanContact = method === "email" ? contact.toLowerCase().trim() : contact.trim();
 
+    logStart("auth", "Creating staff user", { fullName, method, role: isAdmin ? "admin" : role, branch });
+
     const existing = await User.findOne({ [method]: cleanContact });
     if (existing) {
+      console.warn(`[auth] ⚠️ User creation blocked — ${method} already exists: ${cleanContact}`);
       return res.status(400).json({ message: "A user with that email/phone already exists" });
     }
 
@@ -228,12 +247,13 @@ export const createUser = async (req, res) => {
       [method]: cleanContact,
     });
 
+    logSuccess("auth", "Staff user created", { userId: user._id, role: user.role, isAdmin: user.isAdmin });
     res.status(201).json({
       message: "User created successfully",
       user: adminUserView(user),
     });
   } catch (error) {
-    console.error("CREATE USER ERROR:", error);
+    logError("auth", "Create user error", error);
     res.status(500).json({ message: "Server error" });
   }
 };
@@ -252,7 +272,7 @@ export const getCashiers = async (req, res) => {
 
     res.json(cashiers.map((c) => ({ id: c._id, fullName: c.fullName, branch: c.branch })));
   } catch (error) {
-    console.error("GET CASHIERS ERROR:", error);
+    logError("auth", "Get cashiers error", error);
     res.status(500).json({ message: "Failed to fetch cashiers" });
   }
 };
@@ -270,7 +290,7 @@ export const getAllUsers = async (req, res) => {
 
     res.json(users.map(adminUserView));
   } catch (error) {
-    console.error("GET ALL USERS ERROR:", error);
+    logError("auth", "Get all users error", error);
     res.status(500).json({ message: "Failed to fetch users" });
   }
 };
@@ -284,7 +304,7 @@ export const getAllUsersIncludingCustomers = async (req, res) => {
     const users = await User.find({}).populate("branch", "name").sort({ createdAt: -1 });
     res.json(users.map(adminUserView));
   } catch (error) {
-    console.error("GET ALL USERS (INCL CUSTOMERS) ERROR:", error);
+    logError("auth", "Get all users (incl. customers) error", error);
     res.status(500).json({ message: "Failed to fetch users" });
   }
 };
@@ -299,7 +319,7 @@ export const getStaffCount = async (req, res) => {
     });
     res.json({ totalStaff });
   } catch (error) {
-    console.error("GET STAFF COUNT ERROR:", error);
+    logError("auth", "Get staff count error", error);
     res.status(500).json({ message: "Failed to fetch staff count" });
   }
 };
@@ -315,12 +335,16 @@ export const updateUserRole = async (req, res) => {
     const { id } = req.params;
     const { isAdmin, role, branch, jobTitle } = req.body;
 
+    logStart("auth", "Updating user role", { userId: id, isAdmin, role, branch });
+
     if (req.user._id.toString() === id) {
+      console.warn(`[auth] ⚠️ User ${id} tried to change their own role — blocked`);
       return res.status(400).json({ message: "You can't change your own role" });
     }
 
     const user = await User.findById(id);
     if (!user) {
+      console.warn(`[auth] ⚠️ User not found: ${id}`);
       return res.status(404).json({ message: "User not found" });
     }
 
@@ -342,9 +366,11 @@ export const updateUserRole = async (req, res) => {
     }
 
     await user.save();
+
+    logSuccess("auth", "User role updated", { userId: id, newRole: user.isAdmin ? "admin" : user.role });
     res.json({ message: "Role updated successfully", user: adminUserView(user) });
   } catch (error) {
-    console.error("UPDATE USER ROLE ERROR:", error);
+    logError("auth", "Update user role error", error);
     res.status(500).json({ message: "Failed to update role" });
   }
 };
@@ -355,22 +381,26 @@ export const updateUserRole = async (req, res) => {
 export const toggleUserStatus = async (req, res) => {
   try {
     const { id } = req.params;
+    logStart("auth", "Toggling user status", { userId: id });
 
     if (req.user._id.toString() === id) {
+      console.warn(`[auth] ⚠️ User ${id} tried to deactivate themselves — blocked`);
       return res.status(400).json({ message: "You can't deactivate your own account" });
     }
 
     const user = await User.findById(id);
     if (!user) {
+      console.warn(`[auth] ⚠️ User not found: ${id}`);
       return res.status(404).json({ message: "User not found" });
     }
 
     user.isActive = !user.isActive;
     await user.save();
 
+    logSuccess("auth", "User status toggled", { userId: id, isActive: user.isActive });
     res.json({ message: "Status updated", user: adminUserView(user) });
   } catch (error) {
-    console.error("TOGGLE USER STATUS ERROR:", error);
+    logError("auth", "Toggle user status error", error);
     res.status(500).json({ message: "Failed to update status" });
   }
 };
@@ -385,6 +415,8 @@ export const updateMe = async (req, res) => {
     let { fullName, email, phone } = req.body;
     const user = await User.findById(req.user._id);
 
+    logStart("auth", "Updating own profile", { userId: req.user._id, fieldsChanged: Object.keys(req.body) });
+
     if (fullName !== undefined) {
       fullName = fullName.trim();
       if (!fullName) {
@@ -398,6 +430,7 @@ export const updateMe = async (req, res) => {
       if (cleanEmail !== (user.email || "")) {
         const taken = await User.findOne({ email: cleanEmail, _id: { $ne: user._id } });
         if (taken) {
+          console.warn(`[auth] ⚠️ Email already registered: ${cleanEmail}`);
           return res.status(400).json({ message: "This email is already registered" });
         }
         user.email = cleanEmail;
@@ -409,6 +442,7 @@ export const updateMe = async (req, res) => {
       if (cleanPhone !== (user.phone || "")) {
         const taken = await User.findOne({ phone: cleanPhone, _id: { $ne: user._id } });
         if (taken) {
+          console.warn(`[auth] ⚠️ Phone already registered: ${cleanPhone}`);
           return res.status(400).json({ message: "This phone number is already registered" });
         }
         user.phone = cleanPhone;
@@ -420,9 +454,11 @@ export const updateMe = async (req, res) => {
     }
 
     await user.save();
+
+    logSuccess("auth", "Own profile updated", { userId: user._id });
     res.json({ user: publicUser(user) });
   } catch (error) {
-    console.error("UPDATE ME ERROR:", error);
+    logError("auth", "Update me error", error);
     res.status(500).json({ message: "Server error" });
   }
 };
@@ -435,11 +471,13 @@ export const updateMe = async (req, res) => {
 export const updateSelectedBranch = async (req, res) => {
   try {
     const { branch } = req.body;
+    logStart("auth", "Updating selected branch", { userId: req.user._id, branch });
 
     if (branch) {
       const Branch = (await import("../models/Branch.js")).default;
       const exists = await Branch.findById(branch).select("_id");
       if (!exists) {
+        console.warn(`[auth] ⚠️ Branch not found: ${branch}`);
         return res.status(400).json({ message: "Branch not found" });
       }
     }
@@ -450,9 +488,10 @@ export const updateSelectedBranch = async (req, res) => {
       { new: true }
     );
 
+    logSuccess("auth", "Selected branch updated", { userId: req.user._id, branch });
     res.json({ user: publicUser(user) });
   } catch (error) {
-    console.error("UPDATE SELECTED BRANCH ERROR:", error);
+    logError("auth", "Update selected branch error", error);
     res.status(500).json({ message: "Server error" });
   }
 };
@@ -463,6 +502,7 @@ export const updateSelectedBranch = async (req, res) => {
 export const changePassword = async (req, res) => {
   try {
     const { currentPassword, newPassword, confirmPassword } = req.body;
+    logStart("auth", "Changing password", { userId: req.user._id });
 
     if (!currentPassword || !newPassword || !confirmPassword) {
       return res.status(400).json({ message: "All fields are required" });
@@ -477,6 +517,7 @@ export const changePassword = async (req, res) => {
     const user = await User.findById(req.user._id); // req.user has password excluded, refetch full doc
     const isMatch = await bcrypt.compare(currentPassword, user.password);
     if (!isMatch) {
+      console.warn(`[auth] ⚠️ Password change failed — current password incorrect for user ${req.user._id}`);
       return res.status(401).json({ message: "Current password is incorrect" });
     }
 
@@ -484,9 +525,10 @@ export const changePassword = async (req, res) => {
     user.password = await bcrypt.hash(newPassword, salt);
     await user.save();
 
+    logSuccess("auth", "Password changed", { userId: req.user._id });
     res.json({ message: "Password updated successfully" });
   } catch (error) {
-    console.error("CHANGE PASSWORD ERROR:", error);
+    logError("auth", "Change password error", error);
     res.status(500).json({ message: "Server error" });
   }
 };
@@ -526,11 +568,14 @@ export const forgotPassword = async (req, res) => {
     const method = isEmail(value) ? "email" : "phone";
     const clean = method === "email" ? value.toLowerCase() : value;
 
+    logStart("auth", "Forgot password requested", { method, contact: maskContact(clean, method) });
+
     const user = await User.findOne({ [method]: clean }).select(
       "+resetCode +resetCodeExpires +resetCodeAttempts +resetCodeChannel +resetCodeLastSentAt"
     );
 
     if (!user) {
+      console.warn(`[auth] ⚠️ Forgot-password — no account for ${method}: ${maskContact(clean, method)}`);
       return res.status(404).json({
         notFound: true,
         message: "No account found with that email or phone number.",
@@ -541,6 +586,7 @@ export const forgotPassword = async (req, res) => {
       const waitSec = Math.ceil(
         (RESEND_COOLDOWN_MS - (Date.now() - user.resetCodeLastSentAt.getTime())) / 1000
       );
+      console.warn(`[auth] ⚠️ Reset code cooldown active for user ${user._id} — wait ${waitSec}s`);
       return res.status(429).json({ message: `Please wait ${waitSec}s before requesting another code.` });
     }
 
@@ -561,10 +607,11 @@ export const forgotPassword = async (req, res) => {
         await sendResetCode({ to: user.phone, code, channel: "sms" });
       }
     } catch (sendErr) {
-      console.error("SEND RESET CODE ERROR:", sendErr);
+      logError("auth", "Failed to send reset code", sendErr);
       return res.status(500).json({ message: "Failed to send reset code. Please try again." });
     }
 
+    logSuccess("auth", "Reset code sent", { userId: user._id, channel });
     res.json({
       message: `A reset code was sent via ${channel}.`,
       method,
@@ -572,7 +619,7 @@ export const forgotPassword = async (req, res) => {
       maskedContact: maskContact(clean, method),
     });
   } catch (error) {
-    console.error("FORGOT PASSWORD ERROR:", error);
+    logError("auth", "Forgot password error", error);
     res.status(500).json({ message: "Server error" });
   }
 };
@@ -590,15 +637,21 @@ export const resendResetCode = async (req, res) => {
     const method = isEmail(value) ? "email" : "phone";
     const clean = method === "email" ? value.toLowerCase() : value;
 
+    logStart("auth", "Resending reset code", { method, contact: maskContact(clean, method), requestedChannel: channel });
+
     const user = await User.findOne({ [method]: clean }).select(
       "+resetCode +resetCodeExpires +resetCodeAttempts +resetCodeChannel +resetCodeLastSentAt"
     );
-    if (!user) return res.status(404).json({ notFound: true, message: "Account not found" });
+    if (!user) {
+      console.warn(`[auth] ⚠️ Resend — no account for ${method}: ${maskContact(clean, method)}`);
+      return res.status(404).json({ notFound: true, message: "Account not found" });
+    }
 
     if (user.resetCodeLastSentAt && Date.now() - user.resetCodeLastSentAt.getTime() < RESEND_COOLDOWN_MS) {
       const waitSec = Math.ceil(
         (RESEND_COOLDOWN_MS - (Date.now() - user.resetCodeLastSentAt.getTime())) / 1000
       );
+      console.warn(`[auth] ⚠️ Resend cooldown active for user ${user._id} — wait ${waitSec}s`);
       return res.status(429).json({ message: `Please wait ${waitSec}s before resending.` });
     }
 
@@ -618,9 +671,10 @@ export const resendResetCode = async (req, res) => {
       await sendResetCode({ to: user.phone, code, channel: useChannel });
     }
 
+    logSuccess("auth", "Reset code resent", { userId: user._id, channel: useChannel });
     res.json({ message: `Code resent via ${useChannel}.`, channel: useChannel });
   } catch (error) {
-    console.error("RESEND RESET CODE ERROR:", error);
+    logError("auth", "Resend reset code error", error);
     res.status(500).json({ message: "Server error" });
   }
 };
@@ -640,24 +694,30 @@ export const verifyResetCode = async (req, res) => {
     const method = isEmail(value) ? "email" : "phone";
     const clean = method === "email" ? value.toLowerCase() : value;
 
+    logStart("auth", "Verifying reset code", { method, contact: maskContact(clean, method) });
+
     const user = await User.findOne({ [method]: clean }).select(
       "+resetCode +resetCodeExpires +resetCodeAttempts"
     );
     if (!user || !user.resetCode) {
+      console.warn(`[auth] ⚠️ Verify — invalid/expired code for ${method}: ${maskContact(clean, method)}`);
       return res.status(400).json({ message: "Invalid or expired code" });
     }
 
     if (user.resetCodeExpires < new Date()) {
+      console.warn(`[auth] ⚠️ Verify — code expired for user ${user._id}`);
       return res.status(400).json({ message: "Code expired. Please request a new one." });
     }
 
     if (user.resetCodeAttempts >= MAX_ATTEMPTS) {
+      console.warn(`[auth] ⚠️ Verify — too many attempts for user ${user._id}`);
       return res.status(429).json({ message: "Too many attempts. Please request a new code." });
     }
 
     if (hashCode(code.trim()) !== user.resetCode) {
       user.resetCodeAttempts += 1;
       await user.save();
+      console.warn(`[auth] ⚠️ Verify — incorrect code for user ${user._id} (attempt ${user.resetCodeAttempts}/${MAX_ATTEMPTS})`);
       return res.status(400).json({ message: "Incorrect code" });
     }
 
@@ -670,9 +730,10 @@ export const verifyResetCode = async (req, res) => {
     user.resetCodeAttempts = 0;
     await user.save();
 
+    logSuccess("auth", "Reset code verified", { userId: user._id });
     res.json({ message: "Code verified", resetToken });
   } catch (error) {
-    console.error("VERIFY RESET CODE ERROR:", error);
+    logError("auth", "Verify reset code error", error);
     res.status(500).json({ message: "Server error" });
   }
 };
@@ -684,6 +745,8 @@ export const verifyResetCode = async (req, res) => {
 export const resetPasswordWithCode = async (req, res) => {
   try {
     const { resetToken, newPassword } = req.body;
+    logStart("auth", "Resetting password via token");
+
     if (!resetToken || !newPassword) {
       return res.status(400).json({ message: "Missing reset token or new password" });
     }
@@ -697,6 +760,7 @@ export const resetPasswordWithCode = async (req, res) => {
     }).select("+resetToken +resetTokenExpires");
 
     if (!user) {
+      console.warn("[auth] ⚠️ Reset password — invalid or expired token");
       return res.status(400).json({ message: "Invalid or expired session. Please start over." });
     }
 
@@ -706,9 +770,10 @@ export const resetPasswordWithCode = async (req, res) => {
     user.resetTokenExpires = undefined;
     await user.save();
 
+    logSuccess("auth", "Password reset via token", { userId: user._id });
     res.json({ message: "Password reset successful" });
   } catch (error) {
-    console.error("RESET PASSWORD ERROR:", error);
+    logError("auth", "Reset password error", error);
     res.status(500).json({ message: "Server error" });
   }
 };
