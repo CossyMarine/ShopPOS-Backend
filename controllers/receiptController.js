@@ -9,6 +9,7 @@ import {
   creditCashback,
   findCustomerByIdentifier,
 } from "../utils/walletPayments.js";
+import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
 
 // ---- split out into controllers/receipt/*, re-exported so routes/receiptRoutes.js
 //      doesn't need to change its import path ----
@@ -37,16 +38,23 @@ export const payReceipt = async (req, res) => {
   const { amountPaid } = req.body;
 
   try {
+    logStart("receipt", "Processing cash payment", { receiptId: id, amountPaid });
+
     const receipt = await Receipt.findById(id);
-    if (!receipt) return res.status(404).json({ message: "Receipt not found" });
+    if (!receipt) {
+      console.warn(`[receipt] ⚠️ Receipt not found: ${id}`);
+      return res.status(404).json({ message: "Receipt not found" });
+    }
     if (req.shift && !receipt.shift) receipt.shift = req.shift._id;
     if (!["unpaid", "partial"].includes(receipt.status)) {
+      console.warn(`[receipt] ⚠️ Receipt ${id} already ${receipt.status}`);
       return res.status(400).json({ message: "Receipt is already paid or voided" });
     }
 
     const received = parseFloat(amountPaid);
     const balanceDue = Number((receipt.subtotal - (receipt.amountPaid || 0)).toFixed(2));
     if (isNaN(received) || received < balanceDue) {
+      console.warn(`[receipt] ⚠️ Amount received (${received}) < balance due (${balanceDue})`);
       return res.status(400).json({ message: "Amount received cannot be less than the balance due" });
     }
 
@@ -78,9 +86,10 @@ export const payReceipt = async (req, res) => {
     const io = req.app.get("io");
     io.to(`branch:${receipt.branch}`).emit("receipt:paid", receipt);
 
+    logSuccess("receipt", "Cash payment processed", { receiptId: id, balanceDue, changeGiven });
     res.json({ message: "Payment successful", receipt });
   } catch (error) {
-    console.error("Error processing payment:", error.message);
+    logError("receipt", "Error processing payment", error);
     res.status(500).json({ message: "Failed to process payment", error: error.message });
   }
 };
@@ -127,6 +136,10 @@ const finalizeMpesaSuccess = async ({ receipt, mpesaReceiptNumber, io }) => {
     status: "success",
     receipt,
   });
+
+  logSuccess("receipt", "M-Pesa payment finalized (staff)", {
+    receiptId: receipt._id, mpesaReceiptNumber: receipt.mpesaReceiptNumber, cashAmount, tillAmount,
+  });
 };
 
 // Shared: apply a wallet-initiated STK push once Daraja confirms success —
@@ -155,6 +168,10 @@ const finalizeWalletMpesaSuccess = async ({ receipt, mpesaReceiptNumber, io }) =
     status: "success",
     receipt: updated,
   });
+
+  logSuccess("receipt", "M-Pesa payment finalized (wallet)", {
+    receiptId: updated._id, mpesaReceiptNumber: receipt.mpesaReceiptNumber, amount,
+  });
 };
 
 const finalizeMpesaFailure = async ({ receipt, resultDesc, io }) => {
@@ -167,6 +184,8 @@ const finalizeMpesaFailure = async ({ receipt, resultDesc, io }) => {
     status: "failed",
     message: receipt.mpesaResultDesc,
   });
+
+  console.warn(`[receipt] ⚠️ M-Pesa payment failed for receipt ${receipt._id}: ${receipt.mpesaResultDesc}`);
 };
 
 // @desc    Trigger an STK push ("Prompt"). cashAmount = 0 for prompt-only, or
@@ -178,13 +197,20 @@ export const initiateMpesaPayment = async (req, res) => {
   let { phone, cashAmount } = req.body;
 
   try {
+    logStart("receipt", "Initiating M-Pesa STK push", { receiptId: id, phone, cashAmount });
+
     const receipt = await Receipt.findById(id);
-    if (!receipt) return res.status(404).json({ message: "Receipt not found" });
+    if (!receipt) {
+      console.warn(`[receipt] ⚠️ Receipt not found: ${id}`);
+      return res.status(404).json({ message: "Receipt not found" });
+    }
     if (req.shift && !receipt.shift) receipt.shift = req.shift._id;
     if (!["unpaid", "partial"].includes(receipt.status)) {
+      console.warn(`[receipt] ⚠️ Receipt ${id} already ${receipt.status}`);
       return res.status(400).json({ message: "Receipt is already paid or voided" });
     }
     if (!phone) {
+      console.warn("[receipt] ⚠️ Missing M-Pesa phone number");
       return res.status(400).json({ message: "M-Pesa phone number is required" });
     }
 
@@ -201,6 +227,8 @@ export const initiateMpesaPayment = async (req, res) => {
 
     const tillAmount = Number((balanceDue - cashAmount).toFixed(2));
 
+    console.log(`[receipt] → Sending STK push: KES ${tillAmount} to ${phone} (ref: ${receipt.billId})`);
+
     const stkRes = await stkPush({
       phone,
       amount: tillAmount,
@@ -209,6 +237,7 @@ export const initiateMpesaPayment = async (req, res) => {
     });
 
     if (String(stkRes.ResponseCode) !== "0") {
+      console.warn(`[receipt] ⚠️ Daraja rejected STK push: ${stkRes.ResponseDescription}`);
       return res.status(400).json({
         message: stkRes.ResponseDescription || "Failed to initiate M-Pesa payment",
       });
@@ -228,6 +257,8 @@ export const initiateMpesaPayment = async (req, res) => {
     const io = req.app.get("io");
     io.to(`branch:${receipt.branch}`).emit("receipt:mpesaPending", receipt);
 
+    logSuccess("receipt", "STK push sent", { receiptId: id, checkoutRequestId: stkRes.CheckoutRequestID, tillAmount, cashAmount });
+
     res.json({
       message: "STK push sent. Ask the customer to enter their M-Pesa PIN.",
       checkoutRequestId: stkRes.CheckoutRequestID,
@@ -235,7 +266,7 @@ export const initiateMpesaPayment = async (req, res) => {
       cashAmount,
     });
   } catch (error) {
-    console.error("Error initiating M-Pesa payment:", error.response?.data || error.message);
+    logError("receipt", "Error initiating M-Pesa payment", error);
     res.status(500).json({
       message:
         error.response?.data?.errorMessage ||
@@ -251,12 +282,17 @@ export const initiateMpesaPayment = async (req, res) => {
 export const mpesaCallback = async (req, res) => {
   try {
     const callback = req.body?.Body?.stkCallback;
-    if (!callback) return res.status(200).json({ message: "Ignored" });
+    if (!callback) {
+      console.warn("[receipt] ⚠️ M-Pesa callback received with no stkCallback body — ignored");
+      return res.status(200).json({ message: "Ignored" });
+    }
 
     const { CheckoutRequestID, ResultCode, ResultDesc, CallbackMetadata } = callback;
+    logStart("receipt", "M-Pesa callback received", { CheckoutRequestID, ResultCode, ResultDesc });
 
     const receipt = await Receipt.findOne({ mpesaCheckoutRequestId: CheckoutRequestID });
     if (!receipt || !["unpaid", "partial"].includes(receipt.status)) {
+      console.warn(`[receipt] ⚠️ Callback for ${CheckoutRequestID} — receipt not found or already settled`);
       return res.status(200).json({ message: "Receipt not found or already settled" });
     }
 
@@ -276,9 +312,12 @@ export const mpesaCallback = async (req, res) => {
       await finalizeMpesaFailure({ receipt, resultDesc: ResultDesc, io });
     }
 
+    logSuccess("receipt", "M-Pesa callback processed", { CheckoutRequestID, ResultCode });
     res.status(200).json({ message: "Callback processed" });
   } catch (error) {
-    console.error("M-Pesa callback error:", error.message);
+    logError("receipt", "M-Pesa callback error", error);
+    // Always 200 back to Daraja — logging the failure is what matters here,
+    // returning a non-200 would just cause Safaricom to retry the callback.
     res.status(200).json({ message: "Callback error logged" });
   }
 };
@@ -289,13 +328,20 @@ export const mpesaCallback = async (req, res) => {
 // @access  Protected — cashier, branchManager, admin
 export const getMpesaStatus = async (req, res) => {
   try {
+    logStart("receipt", "Checking M-Pesa status", { receiptId: req.params.id });
+
     const receipt = await Receipt.findById(req.params.id);
-    if (!receipt) return res.status(404).json({ message: "Receipt not found" });
+    if (!receipt) {
+      console.warn(`[receipt] ⚠️ Receipt not found: ${req.params.id}`);
+      return res.status(404).json({ message: "Receipt not found" });
+    }
 
     if (receipt.status === "paid") {
+      logSuccess("receipt", "M-Pesa status: already paid", { receiptId: req.params.id });
       return res.json({ status: "success", receipt });
     }
     if (receipt.mpesaStatus !== "pending" || !receipt.mpesaCheckoutRequestId) {
+      logSuccess("receipt", "M-Pesa status: not pending", { receiptId: req.params.id, mpesaStatus: receipt.mpesaStatus || "idle" });
       return res.json({ status: receipt.mpesaStatus || "idle", receipt });
     }
 
@@ -318,12 +364,15 @@ export const getMpesaStatus = async (req, res) => {
         return res.json({ status: "failed", message: queryRes.ResultDesc, receipt });
       }
     } catch (queryErr) {
-      console.warn("M-Pesa status query still pending:", queryErr.response?.data || queryErr.message);
+      // Daraja returns an error while the push is still awaiting PIN entry —
+      // this is expected mid-flight, not a real failure, so it's a warn not logError.
+      console.warn(`[receipt] ⚠️ M-Pesa status query still pending:`, queryErr.response?.data || queryErr.message);
     }
 
+    logSuccess("receipt", "M-Pesa status: still pending", { receiptId: req.params.id });
     res.json({ status: "pending", receipt });
   } catch (error) {
-    console.error("Error checking M-Pesa status:", error.message);
+    logError("receipt", "Error checking M-Pesa status", error);
     res.status(500).json({ message: "Failed to check payment status" });
   }
 };
@@ -333,8 +382,13 @@ export const getMpesaStatus = async (req, res) => {
 // @access  Protected — cashier, branchManager, admin
 export const cancelMpesaPayment = async (req, res) => {
   try {
+    logStart("receipt", "Cancelling M-Pesa payment", { receiptId: req.params.id });
+
     const receipt = await Receipt.findById(req.params.id);
-    if (!receipt) return res.status(404).json({ message: "Receipt not found" });
+    if (!receipt) {
+      console.warn(`[receipt] ⚠️ Receipt not found: ${req.params.id}`);
+      return res.status(404).json({ message: "Receipt not found" });
+    }
 
     receipt.mpesaStatus = "idle";
     receipt.mpesaCheckoutRequestId = null;
@@ -344,9 +398,10 @@ export const cancelMpesaPayment = async (req, res) => {
     receipt.pendingTillAmount = 0;
     await receipt.save();
 
+    logSuccess("receipt", "M-Pesa payment cancelled", { receiptId: req.params.id });
     res.json({ message: "Cancelled", receipt });
   } catch (error) {
-    console.error("Error cancelling M-Pesa payment:", error.message);
+    logError("receipt", "Error cancelling M-Pesa payment", error);
     res.status(500).json({ message: "Failed to cancel" });
   }
 };
@@ -364,10 +419,16 @@ export const payCashAndTill = async (req, res) => {
   let { cashAmount } = req.body;
 
   try {
+    logStart("receipt", "Processing cash+till payment", { receiptId: id, cashAmount });
+
     const receipt = await Receipt.findById(id);
-    if (!receipt) return res.status(404).json({ message: "Receipt not found" });
+    if (!receipt) {
+      console.warn(`[receipt] ⚠️ Receipt not found: ${id}`);
+      return res.status(404).json({ message: "Receipt not found" });
+    }
     if (req.shift && !receipt.shift) receipt.shift = req.shift._id;
     if (!["unpaid", "partial"].includes(receipt.status)) {
+      console.warn(`[receipt] ⚠️ Receipt ${id} already ${receipt.status}`);
       return res.status(400).json({ message: "Receipt is already paid or voided" });
     }
 
@@ -408,9 +469,10 @@ export const payCashAndTill = async (req, res) => {
     const io = req.app.get("io");
     io.to(`branch:${receipt.branch}`).emit("receipt:paid", receipt);
 
+    logSuccess("receipt", "Cash+till payment processed", { receiptId: id, cashAmount, tillAmount });
     res.json({ message: "Payment successful", receipt });
   } catch (error) {
-    console.error("Error processing cash+till payment:", error.message);
+    logError("receipt", "Error processing cash+till payment", error);
     res.status(500).json({ message: "Failed to process payment", error: error.message });
   }
 };
@@ -442,15 +504,22 @@ export const payCombo = async (req, res) => {
   }
 
   try {
+    logStart("receipt", "Processing combo payment", { receiptId: id, cashAmount, tillAmount, rewardAmount });
+
     const receipt = await Receipt.findById(id);
-    if (!receipt) return res.status(404).json({ message: "Receipt not found" });
+    if (!receipt) {
+      console.warn(`[receipt] ⚠️ Receipt not found: ${id}`);
+      return res.status(404).json({ message: "Receipt not found" });
+    }
     if (!["unpaid", "partial"].includes(receipt.status)) {
+      console.warn(`[receipt] ⚠️ Receipt ${id} already ${receipt.status}`);
       return res.status(400).json({ message: "Receipt is already paid or voided" });
     }
     if (req.shift && !receipt.shift) receipt.shift = req.shift._id;
 
     const balanceBefore = Number((receipt.subtotal - (receipt.amountPaid || 0)).toFixed(2));
     if (cashAmount + tillAmount + rewardAmount - balanceBefore > 0.01) {
+      console.warn(`[receipt] ⚠️ Combo amount (${cashAmount + tillAmount + rewardAmount}) exceeds balance (${balanceBefore})`);
       return res.status(400).json({ message: "Combined amount cannot exceed the balance due" });
     }
 
@@ -463,12 +532,14 @@ export const payCombo = async (req, res) => {
       }
       const customer = await findCustomerByIdentifier(rewardIdentifier);
       if (!customer) {
+        console.warn(`[receipt] ⚠️ No customer found for identifier "${rewardIdentifier}"`);
         return res.status(404).json({ message: "No registered customer found with that email or phone" });
       }
       const settings = await AdminSettings.getSettings();
       const pointValue = settings.reward.pointValueKes || 1;
       const pointsToRedeem = Math.ceil(rewardAmount / pointValue);
       if (pointsToRedeem > (customer.walletPoints || 0)) {
+        console.warn(`[receipt] ⚠️ ${customer.fullName} has insufficient points: needs ${pointsToRedeem}, has ${customer.walletPoints}`);
         return res.status(400).json({
           message: `${customer.fullName} only has ${customer.walletPoints} points available`,
         });
@@ -511,13 +582,17 @@ export const payCombo = async (req, res) => {
 
     const balanceRemaining = Number((receipt.subtotal - (receipt.amountPaid || 0)).toFixed(2));
 
+    logSuccess("receipt", "Combo payment processed", {
+      receiptId: id, status: receipt.status, cashAmount, tillAmount, rewardAmount, balanceRemaining,
+    });
+
     res.json({
       message: receipt.status === "paid" ? "Payment complete" : `Applied — KES ${balanceRemaining.toLocaleString()} still due`,
       receipt,
       balanceRemaining,
     });
   } catch (error) {
-    console.error("Error processing combo payment:", error.message);
+    logError("receipt", "Error processing combo payment", error);
     res.status(400).json({ message: error.message || "Failed to process payment" });
   }
 };
