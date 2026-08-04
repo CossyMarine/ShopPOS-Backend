@@ -9,6 +9,16 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+// Fail loudly at boot instead of silently at the first upload attempt.
+const missing = ["CLOUDINARY_CLOUD_NAME", "CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET"]
+  .filter((key) => !process.env[key]);
+
+if (missing.length > 0) {
+  console.error(`[cloudinary] ❌ Missing env vars: ${missing.join(", ")} — uploads will fail`);
+} else {
+  console.log(`[cloudinary] ✅ Configured — cloud_name: ${process.env.CLOUDINARY_CLOUD_NAME}`);
+}
+
 // ── Menu item image storage ─────────────────────────────────────
 const menuImageStorage = new CloudinaryStorage({
   cloudinary,
