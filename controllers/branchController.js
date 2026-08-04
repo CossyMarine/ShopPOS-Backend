@@ -92,3 +92,20 @@ export const getAllStaff = async (req, res) => {
     res.status(500).json({ message: "Failed to fetch staff directory" });
   }
 };
+
+// @desc    Get the current logged-in staff member's own branch (name only) —
+//          used for things like printed labels/receipts where a non-admin
+//          needs their branch name but isn't allowed to list all branches.
+// @route   GET /api/branches/mine
+// @access  Protected — any authenticated staff member
+export const getMyBranch = async (req, res) => {
+  try {
+    if (!req.user.branch) return res.json(null);
+    const branch = await Branch.findById(req.user.branch).select("name");
+    if (!branch) return res.json(null);
+    res.json({ id: branch._id, name: branch.name });
+  } catch (error) {
+    console.error("Error fetching own branch:", error.message);
+    res.status(500).json({ message: "Failed to fetch branch" });
+  }
+};
