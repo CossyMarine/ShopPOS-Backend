@@ -5,16 +5,22 @@ const payslipSchema = new mongoose.Schema(
   {
     user:   { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     branch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch", required: true },
-    period: { type: String, required: true }, // "2026-08"
+    period: { type: String, required: true },
 
-    wageSnapshot: { type: mongoose.Schema.Types.Mixed, required: true }, // frozen rates at run time
+    wageSnapshot: { type: mongoose.Schema.Types.Mixed, required: true },
 
     baseEarnings:   { type: Number, required: true },
     extraEarnings:  { type: Number, default: 0 },
     commission:     { type: Number, default: 0 },
     leaveDeduction: { type: Number, default: 0 },
     taxDeductions:  { type: Number, default: 0 },
-    netPayable:     { type: Number, required: true },
+
+    // NEW
+    customDeductions:      [{ name: String, amount: Number }],
+    customDeductionsTotal: { type: Number, default: 0 },
+    noSalary:               { type: Boolean, default: false },
+
+    netPayable: { type: Number, required: true },
 
     status: { type: String, enum: ["pending", "processing", "paid", "failed"], default: "pending" },
     runBy:       { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
@@ -25,7 +31,6 @@ const payslipSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// One payslip per person per period — re-running just returns/updates the existing pending one
 payslipSchema.index({ user: 1, period: 1 }, { unique: true });
 
 export default mongoose.model("Payslip", payslipSchema);
