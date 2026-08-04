@@ -3,6 +3,7 @@ import Receipt from "../../models/Receipt.js";
 import Order from "../../models/Order.js";
 import Product from "../../models/Product.js";
 import { deductStockFIFO, restockItems } from "../../utils/productStock.js";
+import { logStart, logSuccess, logError } from "../../utils/requestLogger.js";
 
 // @desc    Add items to an unpaid bill — e.g. a held/parked sale the cashier
 //          is resuming, or a correction before the customer pays. Deducts
@@ -19,9 +20,15 @@ export const addItemsToReceipt = async (req, res) => {
   }
 
   try {
+    logStart("receiptMgmt", "Adding items to receipt", { receiptId: id, itemCount: items.length });
+
     const receipt = await Receipt.findById(id);
-    if (!receipt) return res.status(404).json({ message: "Receipt not found" });
+    if (!receipt) {
+      console.warn(`[receiptMgmt] ⚠️ Receipt not found: ${id}`);
+      return res.status(404).json({ message: "Receipt not found" });
+    }
     if (receipt.status !== "unpaid") {
+      console.warn(`[receiptMgmt] ⚠️ Receipt ${id} is ${receipt.status}, not unpaid — blocked`);
       return res.status(400).json({ message: "Only unpaid bills can be added to" });
     }
 
@@ -45,7 +52,10 @@ export const addItemsToReceipt = async (req, res) => {
     for (const line of addedItems) {
       if (!line.productId) continue; // manually-entered fallback line
       const product = await Product.findById(line.productId);
-      if (!product) return res.status(404).json({ message: `Product not found: ${line.productName}` });
+      if (!product) {
+        console.warn(`[receiptMgmt] ⚠️ Product not found: ${line.productName} (${line.productId})`);
+        return res.status(404).json({ message: `Product not found: ${line.productName}` });
+      }
       const { avgCostPerUnit } = await deductStockFIFO(product, line.quantity);
       line.costPriceAtSale = avgCostPerUnit;
     }
@@ -66,9 +76,10 @@ export const addItemsToReceipt = async (req, res) => {
       io.to(`branch:${receipt.branch}`).emit("order:itemsAdded", { order, receipt, addedItems });
     }
 
+    logSuccess("receiptMgmt", "Items added to receipt", { receiptId: id, addedCount: addedItems.length, newSubtotal: subtotal });
     res.json(receipt);
   } catch (error) {
-    console.error("Error adding items to receipt:", error.message);
+    logError("receiptMgmt", "Error adding items to receipt", error);
     res.status(500).json({ message: "Failed to add items", error: error.message });
   }
 };
@@ -86,10 +97,16 @@ export const cancelUnpaidReceipt = async (req, res) => {
   const { id } = req.params;
 
   try {
+    logStart("receiptMgmt", "Cancelling unpaid receipt", { receiptId: id });
+
     const receipt = await Receipt.findById(id);
-    if (!receipt) return res.status(404).json({ message: "Receipt not found" });
+    if (!receipt) {
+      console.warn(`[receiptMgmt] ⚠️ Receipt not found: ${id}`);
+      return res.status(404).json({ message: "Receipt not found" });
+    }
 
     if (receipt.status !== "unpaid" || (receipt.amountPaid && receipt.amountPaid > 0)) {
+      console.warn(`[receiptMgmt] ⚠️ Receipt ${id} not eligible — status=${receipt.status}, amountPaid=${receipt.amountPaid || 0}`);
       return res.status(400).json({
         message: "Only a fully-unpaid bill can be cancelled this way — use a void request instead",
       });
@@ -107,9 +124,10 @@ export const cancelUnpaidReceipt = async (req, res) => {
     io.to(`branch:${receipt.branch}`).emit("receipt:voided", receipt);
     io.to(`branch:${receipt.branch}`).emit("sale:cancelled", { receiptId: receipt._id, orderId: receipt.order });
 
+    logSuccess("receiptMgmt", "Unpaid receipt cancelled and restocked", { receiptId: id, itemCount: receipt.items.length });
     res.json({ message: "Checkout cancelled and stock restored" });
   } catch (error) {
-    console.error("Error cancelling unpaid receipt:", error.message);
+    logError("receiptMgmt", "Error cancelling unpaid receipt", error);
     res.status(500).json({ message: "Failed to cancel checkout", error: error.message });
   }
 };
@@ -119,15 +137,22 @@ export const cancelUnpaidReceipt = async (req, res) => {
 // @access  Protected
 export const markReceiptPrinted = async (req, res) => {
   try {
+    logStart("receiptMgmt", "Marking receipt printed", { receiptId: req.params.id });
+
     const receipt = await Receipt.findByIdAndUpdate(
       req.params.id,
       { $inc: { printCount: 1 }, $set: { printedAt: new Date() } },
       { new: true }
     );
-    if (!receipt) return res.status(404).json({ message: "Receipt not found" });
+    if (!receipt) {
+      console.warn(`[receiptMgmt] ⚠️ Receipt not found: ${req.params.id}`);
+      return res.status(404).json({ message: "Receipt not found" });
+    }
+
+    logSuccess("receiptMgmt", "Receipt marked printed", { receiptId: req.params.id, printCount: receipt.printCount });
     res.json(receipt);
   } catch (error) {
-    console.error("Error marking receipt printed:", error.message);
+    logError("receiptMgmt", "Error marking receipt printed", error);
     res.status(500).json({ message: "Failed to update print status" });
   }
 };
