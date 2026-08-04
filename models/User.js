@@ -33,9 +33,11 @@ const userSchema = new mongoose.Schema(
     // Only meaningful when isAdmin is false.
     role: {
       type: String,
-      enum: ["cashier", "storekeeper", "branchManager", "customer"],
+      enum: ["cashier", "storekeeper", "branchManager", "staff", "customer"],
       default: "customer",
     },
+
+    jobTitle: { type: String, default: null },
 
     isActive: { type: Boolean, default: true },
 
