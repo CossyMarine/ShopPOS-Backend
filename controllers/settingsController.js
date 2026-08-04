@@ -19,10 +19,9 @@ export const getSettings = async (req, res) => {
 // @access  Protected — admin
 
 export const updateSettings = async (req, res) => {
-  const { storeName, tillNumber, tillName, whatsappNumber, callNumber, reward, assumeTableNumberCustomer, assumeTableNumberWaiter, allowPrintingDuringPayment } = req.body;
+  const { tillNumber, tillName, whatsappNumber, callNumber, reward, assumeTableNumberCustomer, assumeTableNumberWaiter, allowPrintingDuringPayment } = req.body;
   try {
     const settings = await AdminSettings.getSettings();
-    if (storeName !== undefined) settings.storeName = storeName;
     if (tillNumber !== undefined) settings.tillNumber = tillNumber;
     if (tillName !== undefined) settings.tillName = tillName;
     if (whatsappNumber !== undefined) settings.whatsappNumber = whatsappNumber;
@@ -45,7 +44,6 @@ export const getPublicSettings = async (req, res) => {
   try {
     const s = await AdminSettings.getSettings();
     res.json({
-      storeName: s.storeName,
       tillNumber: s.tillNumber,
       tillName: s.tillName,
       whatsappNumber: s.whatsappNumber,
