@@ -2,12 +2,15 @@
 import Product from "../models/Product.js";
 import { cloudinary } from "../Config/cloudinary.js";
 import { deductStockFIFO } from "../utils/productStock.js";
+import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
 
 // @desc    Get products for a branch (falls back to name if no image — handled in frontend)
 // @route   GET /api/products?branch=<id>
 // @access  Public (customer catalog) / Protected (staff, auto-scoped via sameBranch)
 export const getProducts = async (req, res) => {
   try {
+    logStart("product", "Loading products", { branch: req.query.branch || "all" });
+
     const filter = { isActive: true };
     if (req.query.branch) filter.branch = req.query.branch;
 
@@ -28,9 +31,10 @@ export const getProducts = async (req, res) => {
       return obj;
     });
 
+    logSuccess("product", "Products loaded", { count: payload.length, strippedBatches: isCashier });
     res.json(payload);
   } catch (error) {
-    console.error("Error fetching products:", error.message);
+    logError("product", "Error fetching products", error);
     res.status(500).json({ message: "Failed to fetch products" });
   }
 };
@@ -41,6 +45,8 @@ export const getProducts = async (req, res) => {
 // @access  Protected — cashier, storekeeper, branchManager, admin
 export const getProductByBarcode = async (req, res) => {
   try {
+    logStart("product", "Looking up barcode", { code: req.params.code, branch: req.query.branch });
+
     const filter = {
       isActive: true,
       $or: [{ barcode: req.params.code }, { caseBarcode: req.params.code }],
@@ -48,16 +54,20 @@ export const getProductByBarcode = async (req, res) => {
     if (req.query.branch) filter.branch = req.query.branch;
 
     const product = await Product.findOne(filter).populate("unit", "name abbreviation");
-    if (!product) return res.status(404).json({ message: "Product not found" });
+    if (!product) {
+      console.warn(`[product] ⚠️ No product found for barcode: ${req.params.code}`);
+      return res.status(404).json({ message: "Product not found" });
+    }
 
     // Same cost-price stripping as getProducts — cashier only ever needs
     // sellingPrice/casePrice to ring up an item, never the cost batches.
     const payload = product.toObject({ virtuals: true });
     if (req.user?.role === "cashier") delete payload.batches;
 
+    logSuccess("product", "Barcode matched", { code: req.params.code, productId: product._id, name: product.name });
     res.json(payload);
   } catch (error) {
-    console.error("Error looking up barcode:", error.message);
+    logError("product", "Error looking up barcode", error);
     res.status(500).json({ message: "Barcode lookup failed" });
   }
 };
@@ -67,10 +77,17 @@ export const getProductByBarcode = async (req, res) => {
 // @access  Protected — storekeeper, branchManager, admin
 export const uploadProductImage = async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ message: "No image uploaded" });
+    logStart("product", "Uploading product image");
+
+    if (!req.file) {
+      console.warn("[product] ⚠️ No file present on request — check multer middleware / field name");
+      return res.status(400).json({ message: "No image uploaded" });
+    }
+
+    logSuccess("product", "Product image uploaded", { url: req.file.path, publicId: req.file.filename });
     res.json({ url: req.file.path, publicId: req.file.filename });
   } catch (error) {
-    console.error("Error uploading product image:", error.message);
+    logError("product", "Error uploading product image", error);
     res.status(500).json({ message: "Image upload failed" });
   }
 };
@@ -86,7 +103,10 @@ export const createProduct = async (req, res) => {
       imageUrl, imagePublicId, branch,
     } = req.body;
 
+    logStart("product", "Creating product", { name, branch, sellingPrice });
+
     if (!name || !unit || !sellingPrice || !branch) {
+      console.warn("[product] ⚠️ Missing required field(s) on create");
       return res.status(400).json({ message: "Name, unit, sellingPrice and branch are required" });
     }
 
@@ -103,9 +123,10 @@ export const createProduct = async (req, res) => {
       branch, batches: [],
     });
 
+    logSuccess("product", "Product created", { productId: product._id, name });
     res.status(201).json(product);
   } catch (error) {
-    console.error("Error creating product:", error.message);
+    logError("product", "Error creating product", error);
     res.status(500).json({ message: "Failed to create product" });
   }
 };
@@ -122,22 +143,32 @@ export const updateProduct = async (req, res) => {
     const updates = {};
     allowed.forEach((key) => { if (req.body[key] !== undefined) updates[key] = req.body[key]; });
 
+    logStart("product", "Updating product", { productId: req.params.id, fields: Object.keys(updates) });
+
     if (updates.packSize !== undefined) {
       updates.packSize = Math.max(1, Math.round(Number(updates.packSize) || 1));
     }
     if (updates.packSize === 1) updates.casePrice = null;
 
     const existing = await Product.findById(req.params.id);
-    if (!existing) return res.status(404).json({ message: "Product not found" });
+    if (!existing) {
+      console.warn(`[product] ⚠️ Product not found: ${req.params.id}`);
+      return res.status(404).json({ message: "Product not found" });
+    }
 
     if (updates.imagePublicId !== undefined && existing.imagePublicId && existing.imagePublicId !== updates.imagePublicId) {
-      await cloudinary.uploader.destroy(existing.imagePublicId).catch(() => {});
+      console.log(`[product] → Replacing image — destroying old Cloudinary asset ${existing.imagePublicId}`);
+      await cloudinary.uploader.destroy(existing.imagePublicId).catch((err) => {
+        console.warn(`[product] ⚠️ Failed to destroy old Cloudinary asset ${existing.imagePublicId}:`, err.message);
+      });
     }
 
     const product = await Product.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true });
+
+    logSuccess("product", "Product updated", { productId: product._id });
     res.json(product);
   } catch (error) {
-    console.error("Error updating product:", error.message);
+    logError("product", "Error updating product", error);
     res.status(500).json({ message: "Failed to update product" });
   }
 };
@@ -155,17 +186,24 @@ export const updateProduct = async (req, res) => {
 export const receiveStock = async (req, res) => {
   try {
     const { quantity, costPerUnit, receivedAs, expiryDate, supplierNote } = req.body;
+    logStart("product", "Receiving stock", { productId: req.params.id, quantity, costPerUnit, receivedAs });
+
     if (!quantity || costPerUnit === undefined) {
+      console.warn("[product] ⚠️ Missing quantity or costPerUnit on receive-stock");
       return res.status(400).json({ message: "quantity and costPerUnit are required" });
     }
 
     const product = await Product.findById(req.params.id);
-    if (!product) return res.status(404).json({ message: "Product not found" });
+    if (!product) {
+      console.warn(`[product] ⚠️ Product not found: ${req.params.id}`);
+      return res.status(404).json({ message: "Product not found" });
+    }
 
     const packSize = product.packSize || 1;
     const mode = receivedAs === "case" ? "case" : "each";
 
     if (mode === "case" && packSize <= 1) {
+      console.warn(`[product] ⚠️ ${product.name} has no case size — cannot receive as case`);
       return res.status(400).json({
         message: `${product.name} has no ${product.caseLabel || "case"} size set — receive it by each instead, or set a pack size on the product first`,
       });
@@ -195,9 +233,12 @@ export const receiveStock = async (req, res) => {
     product.batches.push(newBatch);
     await product.save();
 
+    logSuccess("product", "Stock received", {
+      productId: product._id, mode, quantityInEaches: newBatch.quantity, newBatchCount: product.batches.length,
+    });
     res.json(product);
   } catch (error) {
-    console.error("Error receiving stock:", error.message);
+    logError("product", "Error receiving stock", error);
     res.status(500).json({ message: "Failed to receive stock" });
   }
 };
@@ -211,12 +252,23 @@ export const sellProductStock = deductStockFIFO;
 // @access  Protected — branchManager, admin
 export const deleteProduct = async (req, res) => {
   try {
+    logStart("product", "Deleting product", { productId: req.params.id });
+
     const product = await Product.findByIdAndDelete(req.params.id);
-    if (!product) return res.status(404).json({ message: "Product not found" });
-    if (product.imagePublicId) await cloudinary.uploader.destroy(product.imagePublicId).catch(() => {});
+    if (!product) {
+      console.warn(`[product] ⚠️ Product not found: ${req.params.id}`);
+      return res.status(404).json({ message: "Product not found" });
+    }
+    if (product.imagePublicId) {
+      await cloudinary.uploader.destroy(product.imagePublicId).catch((err) => {
+        console.warn(`[product] ⚠️ Failed to destroy Cloudinary asset ${product.imagePublicId}:`, err.message);
+      });
+    }
+
+    logSuccess("product", "Product deleted", { productId: req.params.id, name: product.name });
     res.json({ message: "Product deleted" });
   } catch (error) {
-    console.error("Error deleting product:", error.message);
+    logError("product", "Error deleting product", error);
     res.status(500).json({ message: "Failed to delete product" });
   }
 };
