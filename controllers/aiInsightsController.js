@@ -201,19 +201,58 @@ Respond with raw JSON only:
 
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
 
-  const { data } = await axios.post(
-    endpoint,
-    {
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: "application/json" },
-    },
-    { timeout: 25000 }
-  );
+  console.log(`[aiInsights] → Calling Gemini model "${GEMINI_MODEL}"`);
+  console.log(`[aiInsights] → Endpoint: ${endpoint.replace(apiKey, "***")}`);
+  console.log(`[aiInsights] → API key present: ${Boolean(apiKey)}, length: ${apiKey?.length || 0}`);
+  console.log(`[aiInsights] → Prompt size: ${prompt.length} chars`);
 
-  const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!rawText) throw new Error("Gemini returned an empty response");
+  try {
+    const { data, status } = await axios.post(
+      endpoint,
+      {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: "application/json" },
+      },
+      { timeout: 25000 }
+    );
 
-  return JSON.parse(rawText);
+    // ✅ This is the line to watch for a successful call — status should be 200
+    console.log(`[aiInsights] ✅ Gemini responded with status ${status}`);
+
+    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!rawText) {
+      console.error("[aiInsights] ❌ Empty response body from Gemini:", JSON.stringify(data));
+      throw new Error("Gemini returned an empty response");
+    }
+
+    console.log(`[aiInsights] → Raw text length: ${rawText.length} chars`);
+
+    try {
+      const parsed = JSON.parse(rawText);
+      console.log("[aiInsights] ✅ Parsed insights:", JSON.stringify(parsed));
+      return parsed;
+    } catch (parseErr) {
+      console.error("[aiInsights] ❌ Failed to parse Gemini JSON. Raw text was:", rawText);
+      throw new Error(`Gemini response was not valid JSON: ${parseErr.message}`);
+    }
+  } catch (error) {
+    if (error.response) {
+      // Gemini/Google returned an actual HTTP error — this is the real reason,
+      // NOT error.message, which just says "Request failed with status code X"
+      console.error(
+        `[aiInsights] ❌ Gemini HTTP error ${error.response.status} ${error.response.statusText}`
+      );
+      console.error(
+        "[aiInsights] ❌ Gemini error body:",
+        JSON.stringify(error.response.data, null, 2)
+      );
+    } else if (error.request) {
+      console.error("[aiInsights] ❌ No response received from Gemini (network/timeout):", error.message);
+    } else {
+      console.error("[aiInsights] ❌ Error before request was sent:", error.message);
+    }
+    throw error;
+  }
 };
 
 // @desc    Run a live AI audit across stock, voids, attendance, and payroll
@@ -222,8 +261,13 @@ Respond with raw JSON only:
 export const runStoreAudit = async (req, res) => {
   try {
     const branchId = req.query.branch || null;
+    console.log(`[aiInsights] Starting store audit${branchId ? ` for branch ${branchId}` : " (all branches)"}`);
+
     const snapshot = await buildStoreSnapshot(branchId);
+    console.log("[aiInsights] Snapshot built. Metrics:", JSON.stringify(snapshot.metrics));
+
     const insights = await callGemini(snapshot);
+    console.log("[aiInsights] ✅ Audit complete, sending response to client");
 
     res.json({
       generatedAt: new Date(),
@@ -231,9 +275,12 @@ export const runStoreAudit = async (req, res) => {
       insights,
     });
   } catch (error) {
-    console.error("Error running AI store audit:", error.message);
+    console.error("[aiInsights] ❌ Error running AI store audit:", error.message);
+    if (error.response?.data) {
+      console.error("[aiInsights] ❌ Full upstream error body:", JSON.stringify(error.response.data));
+    }
     res
-      .status(error.status || 500)
+      .status(error.response?.status || error.status || 500)
       .json({ message: "Failed to run AI store audit", error: error.message });
   }
 };
