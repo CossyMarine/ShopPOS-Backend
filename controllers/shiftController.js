@@ -5,6 +5,7 @@ import Receipt from "../models/Receipt.js";
 import VoidRequest from "../models/VoidRequest.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
+import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
 
 // @desc    Open a shift for the logged-in user. Each cashier has their own
 //          shift — the uniqueness check is scoped per-user, not branch-wide.
@@ -22,8 +23,11 @@ export const openShift = async (req, res) => {
   }
 
   try {
+    logStart("shift", "Opening shift", { openedBy, openingFloat });
+
     const existing = await Shift.findOne({ openedBy, status: "open" });
     if (existing) {
+      console.warn(`[shift] ⚠️ Shift already open for user ${openedBy}`);
       return res.status(400).json({ message: "You already have a shift open", shift: existing });
     }
 
@@ -32,9 +36,10 @@ export const openShift = async (req, res) => {
     const io = req.app.get("io");
     io.to(`branch:${shift.branch}`).emit("shift:opened", shift);
 
+    logSuccess("shift", "Shift opened", { shiftId: shift._id, openedBy });
     res.status(201).json(shift);
   } catch (error) {
-    console.error("Error opening shift:", error.message);
+    logError("shift", "Error opening shift", error);
     res.status(500).json({ message: "Failed to open shift", error: error.message });
   }
 };
@@ -44,10 +49,12 @@ export const openShift = async (req, res) => {
 // @access  Protected
 export const getCurrentShift = async (req, res) => {
   try {
+    logStart("shift", "Fetching current shift", { user: req.user._id });
     const shift = await Shift.findOne({ openedBy: req.user._id, status: "open" }).populate("openedBy", "fullName");
+    logSuccess("shift", "Current shift fetched", { found: Boolean(shift), shiftId: shift?._id });
     res.json(shift);
   } catch (error) {
-    console.error("Error fetching current shift:", error.message);
+    logError("shift", "Error fetching current shift", error);
     res.status(500).json({ message: "Failed to fetch current shift", error: error.message });
   }
 };
@@ -69,12 +76,19 @@ export const addPettyCash = async (req, res) => {
   }
 
   try {
+    logStart("shift", "Adding petty cash entry", { shiftId: id, amount, loggedBy });
+
     const shift = await Shift.findById(id);
-    if (!shift) return res.status(404).json({ message: "Shift not found" });
+    if (!shift) {
+      console.warn(`[shift] ⚠️ Shift not found: ${id}`);
+      return res.status(404).json({ message: "Shift not found" });
+    }
     if (!req.user.isAdmin && req.user.role !== "cashier" && String(shift.openedBy) !== String(req.user._id)) {
+      console.warn(`[shift] ⚠️ Ownership mismatch on shift ${id}`);
       return res.status(403).json({ message: "This isn't your shift" });
     }
     if (shift.status !== "open") {
+      console.warn(`[shift] ⚠️ Cannot log petty cash — shift ${id} is ${shift.status}`);
       return res.status(400).json({ message: "Cannot log petty cash against a closed shift" });
     }
 
@@ -83,9 +97,10 @@ export const addPettyCash = async (req, res) => {
     const io = req.app.get("io");
     io.to(`branch:${shift.branch}`).emit("shift:pettyCashAdded", entry);
 
+    logSuccess("shift", "Petty cash entry added", { shiftId: id, entryId: entry._id, amount });
     res.status(201).json(entry);
   } catch (error) {
-    console.error("Error adding petty cash entry:", error.message);
+    logError("shift", "Error adding petty cash entry", error);
     res.status(500).json({ message: "Failed to add petty cash entry", error: error.message });
   }
 };
@@ -165,15 +180,22 @@ const computeShiftSummary = async (shiftId) => {
 export const getShiftSummary = async (req, res) => {
   const { id } = req.params;
   try {
+    logStart("shift", "Computing shift summary", { shiftId: id });
+
     const shift = await Shift.findById(id);
-    if (!shift) return res.status(404).json({ message: "Shift not found" });
+    if (!shift) {
+      console.warn(`[shift] ⚠️ Shift not found: ${id}`);
+      return res.status(404).json({ message: "Shift not found" });
+    }
     if (!req.user.isAdmin && req.user.role !== "cashier" && String(shift.openedBy) !== String(req.user._id)) {
+      console.warn(`[shift] ⚠️ Ownership mismatch on shift ${id}`);
       return res.status(403).json({ message: "This isn't your shift" });
     }
     const summary = await computeShiftSummary(id);
+    logSuccess("shift", "Shift summary computed", { shiftId: id, grandTotal: summary.grandTotal });
     res.json(summary);
   } catch (error) {
-    console.error("Error computing shift summary:", error.message);
+    logError("shift", "Error computing shift summary", error);
     res.status(500).json({ message: "Failed to compute shift summary", error: error.message });
   }
 };
@@ -192,12 +214,19 @@ export const closeShift = async (req, res) => {
   }
 
   try {
+    logStart("shift", "Closing shift", { shiftId: id, closingCashCount, closedBy });
+
     const shift = await Shift.findById(id);
-    if (!shift) return res.status(404).json({ message: "Shift not found" });
+    if (!shift) {
+      console.warn(`[shift] ⚠️ Shift not found: ${id}`);
+      return res.status(404).json({ message: "Shift not found" });
+    }
     if (!req.user.isAdmin && req.user.role !== "cashier" && String(shift.openedBy) !== String(req.user._id)) {
+      console.warn(`[shift] ⚠️ Ownership mismatch on shift ${id}`);
       return res.status(403).json({ message: "This isn't your shift" });
     }
     if (shift.status !== "open") {
+      console.warn(`[shift] ⚠️ Shift ${id} already closed`);
       return res.status(400).json({ message: "Shift is already closed" });
     }
 
@@ -213,9 +242,10 @@ export const closeShift = async (req, res) => {
     const io = req.app.get("io");
     io.to(`branch:${shift.branch}`).emit("shift:closed", summary);
 
+    logSuccess("shift", "Shift closed", { shiftId: id, variance: summary.variance });
     res.json(summary);
   } catch (error) {
-    console.error("Error closing shift:", error.message);
+    logError("shift", "Error closing shift", error);
     res.status(500).json({ message: "Failed to close shift", error: error.message });
   }
 };
@@ -227,6 +257,8 @@ export const getShiftHistory = async (req, res) => {
   const { userId } = req.params;
   const { from, to } = req.query;
   try {
+    logStart("shift", "Loading shift history", { userId, from, to });
+
     const query = { openedBy: userId };
     if (from || to) {
       query.createdAt = {};
@@ -234,8 +266,11 @@ export const getShiftHistory = async (req, res) => {
       if (to) query.createdAt.$lte = new Date(to);
     }
     const shifts = await Shift.find(query).sort({ createdAt: -1 }).populate("closedBy", "fullName");
+
+    logSuccess("shift", "Shift history loaded", { userId, count: shifts.length });
     res.json(shifts);
   } catch (error) {
+    logError("shift", "Error loading shift history", error);
     res.status(500).json({ message: "Failed to load shift history", error: error.message });
   }
 };
@@ -254,12 +289,21 @@ export const openShiftForCashier = async (req, res) => {
   }
 
   try {
+    logStart("shift", "Opening shift for cashier", { cashierId, openingFloat });
+
     const cashier = await User.findOne({ _id: cashierId, role: "cashier" });
-    if (!cashier) return res.status(404).json({ message: "Cashier not found" });
-    if (!cashier.branch) return res.status(400).json({ message: "This cashier has no assigned branch" });
+    if (!cashier) {
+      console.warn(`[shift] ⚠️ Cashier not found: ${cashierId}`);
+      return res.status(404).json({ message: "Cashier not found" });
+    }
+    if (!cashier.branch) {
+      console.warn(`[shift] ⚠️ Cashier ${cashierId} has no assigned branch`);
+      return res.status(400).json({ message: "This cashier has no assigned branch" });
+    }
 
     const existing = await Shift.findOne({ openedBy: cashierId, status: "open" });
     if (existing) {
+      console.warn(`[shift] ⚠️ ${cashier.fullName} already has a shift open`);
       return res.status(400).json({ message: `${cashier.fullName} already has a shift open`, shift: existing });
     }
 
@@ -268,9 +312,10 @@ export const openShiftForCashier = async (req, res) => {
     const io = req.app.get("io");
     io.to(`branch:${shift.branch}`).emit("shift:opened", shift);
 
+    logSuccess("shift", "Cashier shift opened", { shiftId: shift._id, cashierId });
     res.status(201).json(shift);
   } catch (error) {
-    console.error("Error opening cashier shift:", error.message);
+    logError("shift", "Error opening cashier shift", error);
     res.status(500).json({ message: "Failed to open shift", error: error.message });
   }
 };
@@ -283,10 +328,12 @@ export const openShiftForCashier = async (req, res) => {
 export const getShiftStatusForCashier = async (req, res) => {
   const { cashierId } = req.params;
   try {
+    logStart("shift", "Fetching cashier shift status", { cashierId });
     const shift = await Shift.findOne({ openedBy: cashierId, status: "open" });
+    logSuccess("shift", "Cashier shift status fetched", { cashierId, found: Boolean(shift) });
     res.json(shift);
   } catch (error) {
-    console.error("Error fetching cashier shift status:", error.message);
+    logError("shift", "Error fetching cashier shift status", error);
     res.status(500).json({ message: "Failed to fetch shift status", error: error.message });
   }
 };
