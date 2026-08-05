@@ -25,6 +25,8 @@ import wageRoutes from "./routes/wageRoutes.js";
 import deductionRoutes from "./routes/deductionRoutes.js";
 import staffRoutes from "./routes/staffRoutes.js";
 import aiInsightsRoutes from "./routes/aiInsightsRoutes.js";
+import payrollSettingsRoutes from "./routes/payrollSettingsRoutes";
+
 
 dotenv.config();
 
@@ -83,5 +85,6 @@ app.use("/api/wages", wageRoutes);
 app.use("/api/deductions", deductionRoutes);
 app.use("/api/staff", staffRoutes);
 app.use("/api/ai-insights", aiInsightsRoutes);
+app.use("/api/payroll-settings", payrollSettingsRoutes);
 
 export default app;
