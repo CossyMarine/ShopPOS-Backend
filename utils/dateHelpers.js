@@ -90,6 +90,11 @@ export const getDateRangePreset = (preset) => {
   return { startDate: start, endDate: end };
 };
 
+export const getKenyanDateFor = (dateInput) => {
+  const kenyaString = new Date(dateInput).toLocaleString("en-US", { timeZone: "Africa/Nairobi" });
+  return new Date(kenyaString);
+};
+
 // Start (1st of the month, 00:00:00.000) through the end of "now"
 // (23:59:59.999 today) — anchored to Kenya's wall clock. Using "end of
 // today" instead of "end of month" means today's sales are naturally
