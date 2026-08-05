@@ -44,6 +44,22 @@ const wageProfileSchema = new mongoose.Schema(
     // not require this to be set.
     nextPayoutDate: { type: Date, default: null },
 
+    // When true, rate fields are ignored — this person's pay comes straight
+    // from the branch/org PayrollSettings default. Off = fully custom rate.
+    useOrgDefaultRate: { type: Boolean, default: true },
+
+    // null on any field = inherit that piece from PayrollSettings.
+    schedule: {
+      shiftStart: { type: String, default: null },
+      shiftEnd: { type: String, default: null },
+      disburseAfterHours: { type: Number, default: null },
+      intervalDays: { type: Number, default: null },
+      payDay: { type: Number, default: null },
+    },
+
+    // For daily-interval payday counting. Falls back to User.createdAt if unset.
+    employmentStartDate: { type: Date, default: null },
+
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   },
   { timestamps: true }
