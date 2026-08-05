@@ -1,4 +1,5 @@
 // controllers/payrollController.js
+import axios from "axios";
 import Payslip from "../models/Payslip.js";
 import WageProfile from "../models/WageProfile.js";
 import Deduction from "../models/Deduction.js";
@@ -8,6 +9,8 @@ import LeaveRequest from "../models/LeaveRequest.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
 import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
+import { resolveEffectiveWage } from "../utils/resolveWage.js";
+import { getKenyanDate, getKenyanDateFor, getKenyanDayBounds } from "../utils/dateHelpers.js";
 
 // Literal id used in `WageProfile.selectedDeductions` / request payloads to
 // refer to the built-in flat statutory levy (as opposed to an admin-created
@@ -23,11 +26,22 @@ const EST_HOURS_PER_MONTH = 208; // 8 hrs * 26 working days
 const EST_WEEKDAYS_PER_MONTH = 22;
 const EST_WEEKENDS_PER_MONTH = 8;
 
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.1-flash";
+
+// "YYYY-MM" strings are timezone-unambiguous by construction, so building
+// the range with Date.UTC here is safe as-is — no dateHelpers needed.
 const periodToRange = (period) => {
   const [y, m] = period.split("-").map(Number);
   const start = new Date(Date.UTC(y, m - 1, 1));
   const end = new Date(Date.UTC(y, m, 0, 23, 59, 59, 999));
   return { start, end };
+};
+
+// "YYYY-MM" for the current Kenyan calendar month — used anywhere a run/
+// summary needs "this period" instead of an explicitly-picked one.
+const currentPeriod = () => {
+  const d = getKenyanDate();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 };
 
 const countBusinessDaysInRange = (leaves, start, end) => {
@@ -166,10 +180,25 @@ export const buildPayrollInputForUser = async (user, wage, period) => {
       if (hrs > 8) { hoursWorked += 8; overtimeHours += hrs - 8; } else hoursWorked += hrs;
     });
   } else {
-    const records = await Attendance.find({ user: user._id, status: "closed", createdAt: { $gte: start, $lte: end } });
+    // NEW — honor the branch/org "assume shift check" toggle: staff who
+    // never formally clock out still get counted, using the configured
+    // shift window, instead of silently losing that day's pay entirely.
+    const { assumeShiftCheck, schedule } = await resolveEffectiveWage(wage);
+    const records = await Attendance.find({
+      user: user._id, createdAt: { $gte: start, $lte: end },
+      status: assumeShiftCheck ? { $in: ["open", "closed"] } : "closed",
+    });
     records.forEach((a) => {
       const day = new Date(a.createdAt).getDay();
-      const hrs = (a.clockOutAt - a.createdAt) / 3600000;
+      let clockOut = a.clockOutAt;
+      if (!clockOut && assumeShiftCheck) {
+        const [h, m] = (schedule.shiftEnd || "17:00").split(":").map(Number);
+        clockOut = new Date(a.createdAt);
+        clockOut.setHours(h, m, 0, 0);
+        if (clockOut < a.createdAt) clockOut.setDate(clockOut.getDate() + 1); // overnight shift
+      }
+      if (!clockOut) return; // genuinely still open, enforce mode — skip
+      const hrs = (clockOut - a.createdAt) / 3600000;
       if (day === 0 || day === 6) weekendsWorked += 1; else weekdaysWorked += 1;
       hoursWorked += hrs;
     });
@@ -341,7 +370,7 @@ const confirmOnePayslip = async (id, req) => {
   await slip.save();
 
   slip.status = "paid";
-  slip.disbursedAt = new Date();
+  slip.disbursedAt = getKenyanDate();
   await slip.save();
 
   return { skipped: false, payslip: slip };
@@ -443,8 +472,8 @@ export const estimateMonthlyGross = (wage) => {
   return 0;
 };
 
-// NEW — powers the "Est. Monthly Payroll" stat card, with the same
-// all/role/branch scoping as the global payout panel.
+// NEW — powers the "Est. Monthly Payroll" + "Paid This Month" stat cards,
+// with the same all/role/branch scoping as the global payout panel.
 export const getPayrollSummary = async (req, res) => {
   try {
     const { role, branch } = req.query;
@@ -461,17 +490,146 @@ export const getPayrollSummary = async (req, res) => {
     const estMonthlyPayroll = wageProfiles.reduce((sum, w) => sum + estimateMonthlyGross(w), 0);
     const noSalaryCount = wageProfiles.filter((w) => w.noSalary).length;
 
+    const period = currentPeriod();
+    const paidThisMonth = await Payslip.find({ period, status: "paid", ...wageQuery });
+    const totalPaidThisMonth = paidThisMonth.reduce((sum, p) => sum + p.netPayable, 0);
+
     logSuccess("payroll", "Payroll summary loaded", {
-      count: wageProfiles.length, estMonthlyPayroll: Math.round(estMonthlyPayroll),
+      count: wageProfiles.length, estMonthlyPayroll: Math.round(estMonthlyPayroll), totalPaidThisMonth: Math.round(totalPaidThisMonth),
     });
 
     res.json({
       count: wageProfiles.length,
       noSalaryCount,
       estMonthlyPayroll: Math.round(estMonthlyPayroll),
+      totalPaidThisMonth: Math.round(totalPaidThisMonth), // NEW
+      payoutsThisMonth: paidThisMonth.length,               // NEW
     });
   } catch (error) {
     logError("payroll", "Error loading payroll summary", error);
     res.status(500).json({ message: "Failed to load payroll summary", error: error.message });
+  }
+};
+
+// NEW — everyone whose configured payday (or, for hourly staff, whose
+// completed/assumed-complete shift) lands on today and hasn't been paid
+// for the current period yet. Powers the due-for-payout banner.
+export const getPayrollDueToday = async (req, res) => {
+  try {
+    logStart("payroll", "Loading payroll due today");
+
+    const wageQuery = {};
+    if (!req.user.isAdmin) wageQuery.branch = req.user.branch;
+
+    const wageProfiles = await WageProfile.find(wageQuery)
+      .populate("user", "fullName role jobTitle isActive createdAt employmentStartDate");
+
+    const today = getKenyanDate();
+    const { start: todayStart } = getKenyanDayBounds();
+    const period = currentPeriod();
+    const due = [];
+
+    for (const wage of wageProfiles) {
+      if (!wage.user?.isActive || wage.noSalary) continue;
+
+      const alreadyPaid = await Payslip.findOne({ user: wage.user._id, period, status: { $in: ["paid", "processing"] } });
+      if (alreadyPaid) continue;
+
+      const effective = await resolveEffectiveWage(wage);
+      let isDue = false;
+
+      if (wage.wageType === "monthly") {
+        const payDay = effective.schedule.payDay || 28;
+        const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+        isDue = today.getDate() >= Math.min(payDay, lastDay);
+      } else if (wage.wageType === "daily") {
+        const startRaw = wage.employmentStartDate || wage.user.employmentStartDate || wage.user.createdAt;
+        const daysSinceStart = Math.floor((today - getKenyanDateFor(startRaw)) / 86400000);
+        const interval = effective.schedule.intervalDays || 7;
+        isDue = interval > 0 && daysSinceStart > 0 && daysSinceStart % interval === 0;
+      } else if (wage.wageType === "hourly") {
+        const todayShift = await Shift.findOne({ openedBy: wage.user._id, createdAt: { $gte: todayStart } });
+        if (todayShift) {
+          const hrs = todayShift.closedAt
+            ? (todayShift.closedAt - todayShift.createdAt) / 3600000
+            : effective.assumeShiftCheck ? (effective.schedule.disburseAfterHours || 10) : 0;
+          isDue = hrs >= (effective.schedule.disburseAfterHours || 10);
+        }
+      }
+
+      if (isDue) {
+        due.push({ userId: wage.user._id, fullName: wage.user.fullName, role: wage.user.role, wageType: wage.wageType, period });
+      }
+    }
+
+    logSuccess("payroll", "Payroll due today loaded", { count: due.length });
+    res.json({ count: due.length, due });
+  } catch (error) {
+    logError("payroll", "Error loading payroll due today", error);
+    res.status(500).json({ message: "Failed to load due payouts", error: error.message });
+  }
+};
+
+// NEW — AI read on payroll health, either for one person (?userId=) or the
+// whole scope (branch for managers, everything for admins).
+export const getPayrollInsight = async (req, res) => {
+  const { userId } = req.query;
+  try {
+    logStart("payroll", "Generating payroll insight", { userId: userId || "global" });
+
+    let snapshot;
+    if (userId) {
+      const user = await User.findById(userId);
+      if (!user) return res.status(404).json({ message: "User not found" });
+
+      const wage = await WageProfile.findOne({ user: userId });
+      const payslips = await Payslip.find({ user: userId }).sort({ period: -1 }).limit(12);
+      snapshot = {
+        scope: "individual",
+        name: user.fullName, role: user.role, joinedOn: user.employmentStartDate || user.createdAt,
+        wageType: wage?.wageType, noSalary: wage?.noSalary,
+        timesPaid: payslips.filter((p) => p.status === "paid").length,
+        lastPaidOn: payslips.find((p) => p.status === "paid")?.disbursedAt || null,
+        recentNet: payslips.slice(0, 6).map((p) => ({ period: p.period, net: p.netPayable, status: p.status })),
+      };
+    } else {
+      const branchFilter = req.user.isAdmin ? {} : { branch: req.user.branch };
+      const wageProfiles = await WageProfile.find(branchFilter).populate("user", "fullName isActive");
+      const period = currentPeriod();
+      const paidThisMonth = await Payslip.find({ period, status: "paid", ...branchFilter });
+      snapshot = {
+        scope: "global",
+        staffCount: wageProfiles.filter((w) => w.user?.isActive).length,
+        totalPaidThisMonth: paidThisMonth.reduce((s, p) => s + p.netPayable, 0),
+        payoutsThisMonth: paidThisMonth.length,
+        noSalaryCount: wageProfiles.filter((w) => w.noSalary).length,
+      };
+    }
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return res.status(500).json({ message: "GEMINI_API_KEY not set" });
+
+    const prompt = `
+You are a payroll analyst for a Kenyan retail business. Given this payroll
+snapshot, respond with STRICT JSON only — no markdown fences.
+
+Snapshot: ${JSON.stringify(snapshot)}
+
+Return: {"summary": "1-2 sentence plain-language read on whether this looks
+normal or needs attention", "notes": ["short observations, max 4"]}
+`.trim();
+
+    const { data } = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+      { contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json" } },
+      { timeout: 25000 }
+    );
+    const parsed = JSON.parse(data?.candidates?.[0]?.content?.parts?.[0]?.text || "{}");
+
+    logSuccess("payroll", "Payroll insight generated", { scope: snapshot.scope });
+    res.json(parsed);
+  } catch (error) {
+    logError("payroll", "Error generating payroll insight", error);
+    res.status(500).json({ message: "Failed to generate payroll insight", error: error.message });
   }
 };
