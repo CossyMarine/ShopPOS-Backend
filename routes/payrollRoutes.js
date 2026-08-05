@@ -9,6 +9,8 @@ import {
   runBulkPayroll,      // NEW
   confirmBulkPayslips, // NEW
   getPayrollSummary,   // NEW
+  getPayrollDueToday,
+  getPayrollInsight,
 } from "../controllers/payrollController.js";
 
 const router = express.Router();
@@ -23,5 +25,7 @@ router.post("/run", runPayrollForUser);
 router.post("/run-bulk", runBulkPayroll);       // NEW — global/filtered payout run
 router.post("/:id/confirm", confirmPayslip);
 router.post("/confirm-bulk", confirmBulkPayslips); // NEW — bulk disburse
+router.get("/due-today", getPayrollDueToday);
+router.get("/insight", getPayrollInsight);
 
 export default router;
