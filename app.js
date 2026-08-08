@@ -25,7 +25,7 @@ import wageRoutes from "./routes/wageRoutes.js";
 import deductionRoutes from "./routes/deductionRoutes.js";
 import staffRoutes from "./routes/staffRoutes.js";
 import aiInsightsRoutes from "./routes/aiInsightsRoutes.js";
-import payrollSettingsRoutes from "./routes/payrollSettingsRoutes";
+import payrollSettingsRoutes from "./routes/payrollSettingsRoutes.js";
 
 
 dotenv.config();
