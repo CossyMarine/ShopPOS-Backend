@@ -61,6 +61,9 @@ const userSchema = new mongoose.Schema(
 
     resetToken: { type: String, select: false },            // short-lived token after code is verified
     resetTokenExpires: { type: Date, select: false },
+
+    //Employment date
+    employmentStartDate: { type: Date, default: null },
   },
   { timestamps: true }
 );
