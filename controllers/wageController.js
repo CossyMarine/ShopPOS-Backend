@@ -50,9 +50,12 @@ export const upsertWageProfile = async (req, res) => {
     dailyRateWeekday, dailyRateWeekend,
     monthlySalary, commissionRate,
     paymentMethod, applyStatutoryDeductions,
-    selectedDeductions, // NEW
-    nextPayoutDate,     // NEW
+    selectedDeductions,
+    nextPayoutDate,
     noSalary,
+    useOrgDefaultRate,   // NEW — "use org default rate" toggle in WageProfileModal
+    schedule,            // NEW — per-person schedule override (shiftStart/shiftEnd/disburseAfterHours/intervalDays/payDay)
+    employmentStartDate, // NEW — daily-interval payday counting override
   } = req.body;
 
   if (!["hourly", "daily", "monthly"].includes(wageType)) {
@@ -90,6 +93,15 @@ export const upsertWageProfile = async (req, res) => {
       selectedDeductions: Array.isArray(selectedDeductions) ? selectedDeductions : [],
       nextPayoutDate: nextPayoutDate || null,
       noSalary: !!noSalary,
+      useOrgDefaultRate: useOrgDefaultRate !== false, // NEW — defaults true, matches WageProfile schema default
+      schedule: {                                       // NEW — any field left blank falls back to the org/branch default at read time (resolveEffectiveWage)
+        shiftStart: schedule?.shiftStart || null,
+        shiftEnd: schedule?.shiftEnd || null,
+        disburseAfterHours: schedule?.disburseAfterHours || null,
+        intervalDays: schedule?.intervalDays || null,
+        payDay: schedule?.payDay || null,
+      },
+      employmentStartDate: employmentStartDate ? new Date(employmentStartDate) : null, // NEW
       updatedBy: req.user._id,
     };
 
