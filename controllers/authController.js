@@ -51,7 +51,7 @@ const adminUserView = (user) => ({
   branch: user.branch || null,
   isActive: user.isActive,
   createdAt: user.createdAt,
-  employmentStartDate: !isAdmin && employmentStartDate ? new Date(employmentStartDate) : null,
+  employmentStartDate: user.employmentStartDate || null,
 });
 
 const STAFF_ROLES = ["cashier", "storekeeper", "branchManager", "staff"];
