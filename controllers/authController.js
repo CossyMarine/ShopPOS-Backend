@@ -51,6 +51,7 @@ const adminUserView = (user) => ({
   branch: user.branch || null,
   isActive: user.isActive,
   createdAt: user.createdAt,
+  employmentStartDate: !isAdmin && employmentStartDate ? new Date(employmentStartDate) : null,
 });
 
 const STAFF_ROLES = ["cashier", "storekeeper", "branchManager", "staff"];
@@ -206,7 +207,7 @@ export const registerCustomer = async (req, res) => {
 // @access  Protected — admin
 export const createUser = async (req, res) => {
   try {
-    let { fullName, method, contact, password, isAdmin, role, branch, jobTitle } = req.body;
+    let { fullName, method, contact, password, isAdmin, role, branch, jobTitle ,employmentStartDate} = req.body;
 
     if (!fullName || !method || !contact || !password) {
       return res.status(400).json({ message: "All fields are required" });
@@ -244,6 +245,7 @@ export const createUser = async (req, res) => {
       role: isAdmin ? "customer" : role,
       branch: isAdmin ? null : branch,
       jobTitle: !isAdmin && role === "staff" ? (jobTitle?.trim() || null) : null,
+      employmentStartDate: !isAdmin && employmentStartDate ? new Date(employmentStartDate) : null,
       [method]: cleanContact,
     });
 
