@@ -12,9 +12,10 @@ import {
   estimateMonthlyGross,
 } from "./payrollController.js";
 import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
+import { getKenyanDate } from "../utils/dateHelpers.js";
 
 const currentPeriod = () => {
-  const d = new Date();
+  const d = getKenyanDate();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 };
 
@@ -103,6 +104,7 @@ export const getStaffOverview = async (req, res) => {
         branch: user.branch,
         isAdmin: user.isAdmin,
         createdAt: user.createdAt,
+        employmentStartDate: user.employmentStartDate, // NEW — feeds daily-interval payday counting + AI insight "joined on"
       },
       wageProfile: wage,
       estMonthlyGross: wage ? estimateMonthlyGross(wage) : 0,
