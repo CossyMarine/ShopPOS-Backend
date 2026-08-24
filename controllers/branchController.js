@@ -1,27 +1,26 @@
 // controllers/branchController.js
 import Branch from "../models/Branch.js";
 import User from "../models/User.js";
-import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
+import { logStart, logSuccess } from "../utils/requestLogger.js";
 
 // @desc    List all branches — this is the "view all branches" screen for Super Admin
 // @route   GET /api/branches
 // @access  Protected — admin only
-export const getBranches = async (req, res) => {
+export const getBranches = async (req, res, next) => {
   try {
     logStart("branch", "Loading branches");
     const branches = await Branch.find().populate("manager", "fullName email phone");
     logSuccess("branch", "Branches loaded", { count: branches.length });
     res.json(branches);
   } catch (error) {
-    logError("branch", "Error fetching branches", error);
-    res.status(500).json({ message: "Failed to fetch branches" });
+    next(error);
   }
 };
 
 // @desc    Create a new branch
 // @route   POST /api/branches
 // @access  Protected — admin only
-export const createBranch = async (req, res) => {
+export const createBranch = async (req, res, next) => {
   try {
     const { name, address, taxRate } = req.body;
     logStart("branch", "Creating branch", { name, taxRate });
@@ -36,15 +35,14 @@ export const createBranch = async (req, res) => {
     logSuccess("branch", "Branch created", { branchId: branch._id, name });
     res.status(201).json(branch);
   } catch (error) {
-    logError("branch", "Error creating branch", error);
-    res.status(500).json({ message: "Failed to create branch" });
+    next(error);
   }
 };
 
 // @desc    Update branch details (name, address, tax rate, active status)
 // @route   PUT /api/branches/:id
 // @access  Protected — admin only
-export const updateBranch = async (req, res) => {
+export const updateBranch = async (req, res, next) => {
   try {
     const allowed = ["name", "address", "taxRate", "isActive"];
     const updates = {};
@@ -61,15 +59,14 @@ export const updateBranch = async (req, res) => {
     logSuccess("branch", "Branch updated", { branchId: branch._id });
     res.json(branch);
   } catch (error) {
-    logError("branch", "Error updating branch", error);
-    res.status(500).json({ message: "Failed to update branch" });
+    next(error);
   }
 };
 
 // @desc    Assign a Branch Manager to a branch — also stamps user.role/branch
 // @route   PATCH /api/branches/:id/assign-manager
 // @access  Protected — admin only
-export const assignManager = async (req, res) => {
+export const assignManager = async (req, res, next) => {
   try {
     const { userId } = req.body;
     logStart("branch", "Assigning manager", { branchId: req.params.id, userId });
@@ -101,15 +98,14 @@ export const assignManager = async (req, res) => {
     logSuccess("branch", "Manager assigned", { branchId: branch._id, managerId: user._id, managerName: user.fullName });
     res.json({ branch, manager: user });
   } catch (error) {
-    logError("branch", "Error assigning manager", error);
-    res.status(500).json({ message: "Failed to assign manager" });
+    next(error);
   }
 };
 
 // @desc    Cross-branch staff directory — every worker, grouped by branch
 // @route   GET /api/branches/staff
 // @access  Protected — admin only
-export const getAllStaff = async (req, res) => {
+export const getAllStaff = async (req, res, next) => {
   try {
     logStart("branch", "Loading cross-branch staff directory");
 
@@ -121,8 +117,7 @@ export const getAllStaff = async (req, res) => {
     logSuccess("branch", "Staff directory loaded", { count: staff.length });
     res.json(staff);
   } catch (error) {
-    logError("branch", "Error fetching staff", error);
-    res.status(500).json({ message: "Failed to fetch staff directory" });
+    next(error);
   }
 };
 
@@ -131,7 +126,7 @@ export const getAllStaff = async (req, res) => {
 //          needs their branch name but isn't allowed to list all branches.
 // @route   GET /api/branches/mine
 // @access  Protected — any authenticated staff member
-export const getMyBranch = async (req, res) => {
+export const getMyBranch = async (req, res, next) => {
   try {
     logStart("branch", "Loading own branch", { user: req.user._id });
 
@@ -148,7 +143,6 @@ export const getMyBranch = async (req, res) => {
     logSuccess("branch", "Own branch loaded", { branchId: branch._id, name: branch.name });
     res.json({ id: branch._id, name: branch.name });
   } catch (error) {
-    logError("branch", "Error fetching own branch", error);
-    res.status(500).json({ message: "Failed to fetch branch" });
+    next(error);
   }
 };
