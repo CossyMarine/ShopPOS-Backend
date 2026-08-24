@@ -1,11 +1,11 @@
 // controllers/leaveController.js
 import LeaveRequest from "../models/LeaveRequest.js";
-import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
+import { logStart, logSuccess } from "../utils/requestLogger.js";
 
 // @desc    Request leave (self-service — any staff/storekeeper/cashier/branchManager)
 // @route   POST /api/leave
 // @access  Protected
-export const requestLeave = async (req, res) => {
+export const requestLeave = async (req, res, next) => {
   const { type, from, to, reason } = req.body;
   const user = req.user._id;
 
@@ -35,30 +35,28 @@ export const requestLeave = async (req, res) => {
     logSuccess("leave", "Leave requested", { leaveId: leave._id });
     res.status(201).json(leave);
   } catch (error) {
-    logError("leave", "Error requesting leave", error);
-    res.status(500).json({ message: "Failed to request leave", error: error.message });
+    next(error);
   }
 };
 
 // @desc    Get the logged-in user's own leave requests
 // @route   GET /api/leave/mine
 // @access  Protected
-export const getMyLeave = async (req, res) => {
+export const getMyLeave = async (req, res, next) => {
   try {
     logStart("leave", "Loading my leave requests", { user: req.user._id });
     const leaves = await LeaveRequest.find({ user: req.user._id }).sort({ createdAt: -1 });
     logSuccess("leave", "My leave requests loaded", { count: leaves.length });
     res.json(leaves);
   } catch (error) {
-    logError("leave", "Error loading my leave requests", error);
-    res.status(500).json({ message: "Failed to load leave requests", error: error.message });
+    next(error);
   }
 };
 
 // @desc    Cancel a still-pending leave request (self-service)
 // @route   DELETE /api/leave/:id
 // @access  Protected — must be your own, and still pending
-export const cancelLeave = async (req, res) => {
+export const cancelLeave = async (req, res, next) => {
   try {
     logStart("leave", "Cancelling leave request", { leaveId: req.params.id });
 
@@ -79,15 +77,14 @@ export const cancelLeave = async (req, res) => {
     logSuccess("leave", "Leave request cancelled", { leaveId: req.params.id });
     res.json({ message: "Leave request cancelled" });
   } catch (error) {
-    logError("leave", "Error cancelling leave request", error);
-    res.status(500).json({ message: "Failed to cancel leave request", error: error.message });
+    next(error);
   }
 };
 
 // @desc    Admin/branchManager — pending leave queue for their branch(es)
 // @route   GET /api/leave/pending?branch=
 // @access  Protected — admin, branchManager
-export const getPendingLeave = async (req, res) => {
+export const getPendingLeave = async (req, res, next) => {
   try {
     logStart("leave", "Loading pending leave queue", { branch: req.query.branch || "all" });
 
@@ -100,15 +97,14 @@ export const getPendingLeave = async (req, res) => {
     logSuccess("leave", "Pending leave queue loaded", { count: leaves.length });
     res.json(leaves);
   } catch (error) {
-    logError("leave", "Error loading pending leave", error);
-    res.status(500).json({ message: "Failed to load pending leave", error: error.message });
+    next(error);
   }
 };
 
 // @desc    Approve or reject a leave request
 // @route   PATCH /api/leave/:id/decide
 // @access  Protected — admin, branchManager
-export const decideLeave = async (req, res) => {
+export const decideLeave = async (req, res, next) => {
   const { decision, note } = req.body; // decision: "approved" | "rejected"
   if (!["approved", "rejected"].includes(decision)) {
     return res.status(400).json({ message: "decision must be 'approved' or 'rejected'" });
@@ -139,7 +135,6 @@ export const decideLeave = async (req, res) => {
     logSuccess("leave", "Leave request decided", { leaveId: leave._id, decision });
     res.json(leave);
   } catch (error) {
-    logError("leave", "Error deciding leave request", error);
-    res.status(500).json({ message: "Failed to decide leave request", error: error.message });
+    next(error);
   }
 };
