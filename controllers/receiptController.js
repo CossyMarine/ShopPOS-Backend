@@ -52,7 +52,7 @@ export const payReceipt = async (req, res) => {
     }
 
     const received = parseFloat(amountPaid);
-    const balanceDue = Number((receipt.subtotal - (receipt.amountPaid || 0)).toFixed(2));
+    const balanceDue = Number((receipt.totalDue - (receipt.amountPaid || 0)).toFixed(2));
     if (isNaN(received) || received < balanceDue) {
       console.warn(`[receipt] ⚠️ Amount received (${received}) < balance due (${balanceDue})`);
       return res.status(400).json({ message: "Amount received cannot be less than the balance due" });
@@ -64,7 +64,7 @@ export const payReceipt = async (req, res) => {
     receipt.paymentMethod = "cash";
     receipt.cashAmount = (receipt.cashAmount || 0) + balanceDue;
     receipt.tillAmount = receipt.tillAmount || 0;
-    receipt.amountPaid = receipt.subtotal;
+    receipt.amountPaid = receipt.totalDue;
     receipt.changeGiven = changeGiven;
     receipt.paidAt = new Date();
     receipt.mpesaStatus = receipt.mpesaStatus === "pending" ? "idle" : receipt.mpesaStatus;
@@ -107,7 +107,7 @@ const finalizeMpesaSuccess = async ({ receipt, mpesaReceiptNumber, io }) => {
   receipt.paymentMethod = cashAmount > 0 ? "both" : "mpesa_till";
   receipt.cashAmount = (receipt.cashAmount || 0) + cashAmount;
   receipt.tillAmount = (receipt.tillAmount || 0) + tillAmount;
-  receipt.amountPaid = receipt.subtotal;
+  receipt.amountPaid = receipt.totalDue;
   receipt.changeGiven = 0;
   receipt.paidAt = new Date();
   receipt.mpesaStatus = "success";
@@ -214,7 +214,7 @@ export const initiateMpesaPayment = async (req, res) => {
       return res.status(400).json({ message: "M-Pesa phone number is required" });
     }
 
-    const balanceDue = Number((receipt.subtotal - (receipt.amountPaid || 0)).toFixed(2));
+    const balanceDue = Number((receipt.totalDue - (receipt.amountPaid || 0)).toFixed(2));
     cashAmount = parseFloat(cashAmount) || 0;
     if (cashAmount < 0) {
       return res.status(400).json({ message: "Cash amount cannot be negative" });
@@ -432,7 +432,7 @@ export const payCashAndTill = async (req, res) => {
       return res.status(400).json({ message: "Receipt is already paid or voided" });
     }
 
-    const balanceDue = Number((receipt.subtotal - (receipt.amountPaid || 0)).toFixed(2));
+    const balanceDue = Number((receipt.totalDue - (receipt.amountPaid || 0)).toFixed(2));
     cashAmount = parseFloat(cashAmount);
 
     if (isNaN(cashAmount) || cashAmount <= 0) {
@@ -450,7 +450,7 @@ export const payCashAndTill = async (req, res) => {
     receipt.paymentMethod = "both";
     receipt.cashAmount = (receipt.cashAmount || 0) + cashAmount;
     receipt.tillAmount = (receipt.tillAmount || 0) + tillAmount;
-    receipt.amountPaid = receipt.subtotal;
+    receipt.amountPaid = receipt.totalDue;
     receipt.changeGiven = 0;
     receipt.paidAt = new Date();
     receipt.mpesaStatus = receipt.mpesaStatus === "pending" ? "idle" : receipt.mpesaStatus;
@@ -517,7 +517,7 @@ export const payCombo = async (req, res) => {
     }
     if (req.shift && !receipt.shift) receipt.shift = req.shift._id;
 
-    const balanceBefore = Number((receipt.subtotal - (receipt.amountPaid || 0)).toFixed(2));
+    const balanceBefore = Number((receipt.totalDue - (receipt.amountPaid || 0)).toFixed(2));
     if (cashAmount + tillAmount + rewardAmount - balanceBefore > 0.01) {
       console.warn(`[receipt] ⚠️ Combo amount (${cashAmount + tillAmount + rewardAmount}) exceeds balance (${balanceBefore})`);
       return res.status(400).json({ message: "Combined amount cannot exceed the balance due" });
@@ -565,7 +565,7 @@ export const payCombo = async (req, res) => {
       const totalPaid = receipt.payments.reduce((sum, p) => sum + p.amount, 0);
       receipt.amountPaid = Number(totalPaid.toFixed(2));
       receipt.paymentMethod = receipt.payments.length > 1 ? "both" : cashAmount > 0 ? "cash" : "manual_till";
-      receipt.status = totalPaid >= receipt.subtotal ? "paid" : "partial";
+      receipt.status = totalPaid >= receipt.totalDue ? "paid" : "partial";
       if (receipt.status === "paid") receipt.paidAt = new Date();
       receipt.mpesaStatus = receipt.mpesaStatus === "pending" ? "idle" : receipt.mpesaStatus;
       await receipt.save();
@@ -580,7 +580,7 @@ export const payCombo = async (req, res) => {
       if (receipt.status === "paid") io.to(`branch:${receipt.branch}`).emit("receipt:paid", receipt);
     }
 
-    const balanceRemaining = Number((receipt.subtotal - (receipt.amountPaid || 0)).toFixed(2));
+    const balanceRemaining = Number((receipt.totalDue - (receipt.amountPaid || 0)).toFixed(2));
 
     logSuccess("receipt", "Combo payment processed", {
       receiptId: id, status: receipt.status, cashAmount, tillAmount, rewardAmount, balanceRemaining,
