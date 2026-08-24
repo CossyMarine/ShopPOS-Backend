@@ -73,10 +73,21 @@ const receiptSchema = new mongoose.Schema(
 
     items: [orderItemSchema],
 
+    // Net-of-VAT total when VAT is on and prices are exclusive; equals the
+    // rung-up total when VAT is off. Kept for backward compatibility with
+    // existing reports — use `totalDue` for what the customer actually owes.
     subtotal: {
       type: Number,
       required: true,
     },
+
+    vatEnabled: { type: Boolean, default: false },
+    vatRate: { type: Number, default: 0 },
+    priceMode: { type: String, enum: ["exclusive", "inclusive"], default: "exclusive" },
+    vatAmount: { type: Number, default: 0 },
+    // Authoritative amount owed by the customer — use this everywhere
+    // balanceDue/amountPaid/status math happens, not `subtotal`.
+    totalDue: { type: Number, required: true },
 
     // The registered customer this bill belongs to (null for walk-in/guest bills)
     customer: {
