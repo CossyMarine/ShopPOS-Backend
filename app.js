@@ -5,6 +5,10 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import morgan from "morgan";
 
+// Middlewares
+import { requestId } from "./Middlewares/requestId.js";
+import { notFoundHandler, errorHandler } from "./Middlewares/errorHandler.js";
+
 // Routes
 import authRoutes from "./routes/authRoutes.js";
 import productRoutes from "./routes/productRoutes.js";
@@ -39,6 +43,11 @@ dotenv.config();
 const app = express();
 
 app.set("trust proxy", 1);
+
+/* Request ID — attaches req.requestId to every request, before anything
+   else touches it, so it's available to morgan, controllers, and the
+   error handler for end-to-end tracing of a single transaction. */
+app.use(requestId);
 
 /* CORS — credentials:true is required so the httpOnly auth cookie is sent */
 const ALLOWED_ORIGINS = [
@@ -95,5 +104,14 @@ app.use("/api/ai-insights", aiInsightsRoutes);
 app.use("/api/payroll-settings", payrollSettingsRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/stock-adjustments", stockAdjustmentRoutes);
+
+/* =================================================
+   404 + ERROR HANDLING
+   Must be registered LAST — after every route above — so they only
+   catch what nothing else handled: unmatched routes, and any error
+   passed to next(err) or thrown in an async route handler.
+================================================= */
+app.use(notFoundHandler);
+app.use(errorHandler);
 
 export default app;
