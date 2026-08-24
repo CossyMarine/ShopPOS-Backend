@@ -7,6 +7,27 @@ import { Server } from "socket.io";
 dotenv.config();
 
 /* ========================================
+   🛑 PROCESS-LEVEL SAFETY NETS
+   Must be registered before anything else runs. Without these, a
+   rejected promise or thrown error that nothing catches can silently
+   kill the backend mid-shift with no trace.
+======================================== */
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("❌ Unhandled Rejection at:", promise, "reason:", reason);
+  // Logged, not exited — an unhandled rejection alone shouldn't take
+  // down a live POS. Revisit once Sentry is wired in if you want these
+  // to trigger alerts instead of just console output.
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("❌ Uncaught Exception:", err);
+  // This means a bug escaped every try/catch and every promise handler —
+  // the process state is no longer trustworthy, so exit and let your
+  // process manager (pm2/systemd/Render) restart it clean.
+  process.exit(1);
+});
+
+/* ========================================
    🗄️ CONNECT TO MONGODB
 ======================================== */
 mongoose
