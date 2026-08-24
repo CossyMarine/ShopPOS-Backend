@@ -60,6 +60,9 @@ const STAFF_ROLES_LABEL = "cashier, storekeeper, branchManager, or staff";
 // NOTE: none of the logging added below ever prints a password, reset
 // code, reset token, or password hash — only identifiers (email/phone),
 // user ids, and outcome/reason. Keep it that way in any future edits here.
+// This still holds true after routing errors through next(error): every
+// catch below only ever passes the raw Error object through, and none of
+// these catches construct that Error from a sensitive value.
 
 // ======================= LOGIN =======================
 // @desc    Authenticate any user (customer, cashier, storekeeper, branchManager, admin)
@@ -67,7 +70,7 @@ const STAFF_ROLES_LABEL = "cashier, storekeeper, branchManager, or staff";
 //          check account status -> sign -> cookie.
 // @route   POST /api/auth/login
 // @access  Public
-export const login = async (req, res) => {
+export const login = async (req, res, next) => {
   try {
     let { identifier, password } = req.body;
 
@@ -108,8 +111,7 @@ export const login = async (req, res) => {
     logSuccess("auth", "Login successful", { userId: user._id, role: user.role, isAdmin: user.isAdmin });
     res.json({ user: publicUser(user) });
   } catch (error) {
-    logError("auth", "Login error", error);
-    res.status(500).json({ message: "Server error" });
+    next(error);
   }
 };
 
@@ -132,7 +134,7 @@ export const getMe = async (req, res) => {
 // @desc    Check if an email/phone is already taken
 // @route   GET /api/auth/check-availability?field=email&value=jane@mail.com
 // @access  Public
-export const checkAvailability = async (req, res) => {
+export const checkAvailability = async (req, res, next) => {
   try {
     const { field, value } = req.query;
 
@@ -145,15 +147,14 @@ export const checkAvailability = async (req, res) => {
 
     res.json({ available: !existing });
   } catch (error) {
-    logError("auth", "Check availability error", error);
-    res.status(500).json({ message: "Server error" });
+    next(error);
   }
 };
 
 // ======================= REGISTER (customer self-signup) =======================
 // @route   POST /api/auth/register-customer
 // @access  Public
-export const registerCustomer = async (req, res) => {
+export const registerCustomer = async (req, res, next) => {
   try {
     let { fullName, method, contact, password } = req.body;
 
@@ -197,15 +198,14 @@ export const registerCustomer = async (req, res) => {
     logSuccess("auth", "Customer registered", { userId: user._id, method });
     res.status(201).json({ user: publicUser(user) });
   } catch (error) {
-    logError("auth", "Register customer error", error);
-    res.status(500).json({ message: "Server error" });
+    next(error);
   }
 };
 
 // ======================= REGISTER (staff, admin-only) =======================
 // @route   POST /api/auth/register
 // @access  Protected — admin
-export const createUser = async (req, res) => {
+export const createUser = async (req, res, next) => {
   try {
     let { fullName, method, contact, password, isAdmin, role, branch, jobTitle ,employmentStartDate} = req.body;
 
@@ -255,8 +255,7 @@ export const createUser = async (req, res) => {
       user: adminUserView(user),
     });
   } catch (error) {
-    logError("auth", "Create user error", error);
-    res.status(500).json({ message: "Server error" });
+    next(error);
   }
 };
 
@@ -265,7 +264,7 @@ export const createUser = async (req, res) => {
 //          Super Admin sees every cashier across every branch.
 // @route   GET /api/auth/cashiers
 // @access  Protected
-export const getCashiers = async (req, res) => {
+export const getCashiers = async (req, res, next) => {
   try {
     const filter = { role: "cashier", isActive: true };
     if (!req.user.isAdmin) filter.branch = req.user.branch;
@@ -274,15 +273,14 @@ export const getCashiers = async (req, res) => {
 
     res.json(cashiers.map((c) => ({ id: c._id, fullName: c.fullName, branch: c.branch })));
   } catch (error) {
-    logError("auth", "Get cashiers error", error);
-    res.status(500).json({ message: "Failed to fetch cashiers" });
+    next(error);
   }
 };
 
 // @desc    Get every staff/admin account for the admin Users panel (customers excluded)
 // @route   GET /api/auth/users
 // @access  Protected — admin
-export const getAllUsers = async (req, res) => {
+export const getAllUsers = async (req, res, next) => {
   try {
     const users = await User.find({
       $or: [{ isAdmin: true }, { role: { $ne: "customer" } }],
@@ -292,8 +290,7 @@ export const getAllUsers = async (req, res) => {
 
     res.json(users.map(adminUserView));
   } catch (error) {
-    logError("auth", "Get all users error", error);
-    res.status(500).json({ message: "Failed to fetch users" });
+    next(error);
   }
 };
 
@@ -301,28 +298,26 @@ export const getAllUsers = async (req, res) => {
 //          panel's "All Users" view so customers can be promoted to staff.
 // @route   GET /api/auth/users/all
 // @access  Protected — admin
-export const getAllUsersIncludingCustomers = async (req, res) => {
+export const getAllUsersIncludingCustomers = async (req, res, next) => {
   try {
     const users = await User.find({}).populate("branch", "name").sort({ createdAt: -1 });
     res.json(users.map(adminUserView));
   } catch (error) {
-    logError("auth", "Get all users (incl. customers) error", error);
-    res.status(500).json({ message: "Failed to fetch users" });
+    next(error);
   }
 };
 
 // @desc    Count of staff/admin accounts (customers excluded) — Dashboard metric
 // @route   GET /api/auth/staff-count
 // @access  Protected — admin
-export const getStaffCount = async (req, res) => {
+export const getStaffCount = async (req, res, next) => {
   try {
     const totalStaff = await User.countDocuments({
       $or: [{ isAdmin: true }, { role: { $ne: "customer" } }],
     });
     res.json({ totalStaff });
   } catch (error) {
-    logError("auth", "Get staff count error", error);
-    res.status(500).json({ message: "Failed to fetch staff count" });
+    next(error);
   }
 };
 
@@ -332,7 +327,7 @@ export const getStaffCount = async (req, res) => {
 //          Body: { role: "cashier" | "storekeeper" | "branchManager" | "staff", branch, jobTitle } -> staff role
 // @route   PATCH /api/auth/users/:id/role
 // @access  Protected — admin
-export const updateUserRole = async (req, res) => {
+export const updateUserRole = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { isAdmin, role, branch, jobTitle } = req.body;
@@ -372,15 +367,14 @@ export const updateUserRole = async (req, res) => {
     logSuccess("auth", "User role updated", { userId: id, newRole: user.isAdmin ? "admin" : user.role });
     res.json({ message: "Role updated successfully", user: adminUserView(user) });
   } catch (error) {
-    logError("auth", "Update user role error", error);
-    res.status(500).json({ message: "Failed to update role" });
+    next(error);
   }
 };
 
 // @desc    Activate or deactivate any account
 // @route   PATCH /api/auth/users/:id/status
 // @access  Protected — admin
-export const toggleUserStatus = async (req, res) => {
+export const toggleUserStatus = async (req, res, next) => {
   try {
     const { id } = req.params;
     logStart("auth", "Toggling user status", { userId: id });
@@ -402,8 +396,7 @@ export const toggleUserStatus = async (req, res) => {
     logSuccess("auth", "User status toggled", { userId: id, isActive: user.isActive });
     res.json({ message: "Status updated", user: adminUserView(user) });
   } catch (error) {
-    logError("auth", "Toggle user status error", error);
-    res.status(500).json({ message: "Failed to update status" });
+    next(error);
   }
 };
 
@@ -412,7 +405,7 @@ export const toggleUserStatus = async (req, res) => {
 //          of email/phone they're missing (or edit the one they have).
 // @route   PATCH /api/auth/me
 // @access  Protected
-export const updateMe = async (req, res) => {
+export const updateMe = async (req, res, next) => {
   try {
     let { fullName, email, phone } = req.body;
     const user = await User.findById(req.user._id);
@@ -460,8 +453,7 @@ export const updateMe = async (req, res) => {
     logSuccess("auth", "Own profile updated", { userId: user._id });
     res.json({ user: publicUser(user) });
   } catch (error) {
-    logError("auth", "Update me error", error);
-    res.status(500).json({ message: "Server error" });
+    next(error);
   }
 };
 
@@ -470,7 +462,7 @@ export const updateMe = async (req, res) => {
 //          that adds products/stock knows which branch to save them under.
 // @route   PATCH /api/auth/selected-branch
 // @access  Admin only
-export const updateSelectedBranch = async (req, res) => {
+export const updateSelectedBranch = async (req, res, next) => {
   try {
     const { branch } = req.body;
     logStart("auth", "Updating selected branch", { userId: req.user._id, branch });
@@ -493,15 +485,14 @@ export const updateSelectedBranch = async (req, res) => {
     logSuccess("auth", "Selected branch updated", { userId: req.user._id, branch });
     res.json({ user: publicUser(user) });
   } catch (error) {
-    logError("auth", "Update selected branch error", error);
-    res.status(500).json({ message: "Server error" });
+    next(error);
   }
 };
 
 // @desc    Change the logged-in user's own password
 // @route   PUT /api/auth/change-password
 // @access  Protected
-export const changePassword = async (req, res) => {
+export const changePassword = async (req, res, next) => {
   try {
     const { currentPassword, newPassword, confirmPassword } = req.body;
     logStart("auth", "Changing password", { userId: req.user._id });
@@ -530,8 +521,7 @@ export const changePassword = async (req, res) => {
     logSuccess("auth", "Password changed", { userId: req.user._id });
     res.json({ message: "Password updated successfully" });
   } catch (error) {
-    logError("auth", "Change password error", error);
-    res.status(500).json({ message: "Server error" });
+    next(error);
   }
 };
 
@@ -559,7 +549,7 @@ const MAX_ATTEMPTS = 5;
 // @route   POST /api/auth/forgot-password
 // @body    { identifier }  -- email OR phone
 // @access  Public
-export const forgotPassword = async (req, res) => {
+export const forgotPassword = async (req, res, next) => {
   try {
     const { identifier } = req.body;
     if (!identifier || !identifier.trim()) {
@@ -602,6 +592,9 @@ export const forgotPassword = async (req, res) => {
     user.resetCodeLastSentAt = new Date();
     await user.save();
 
+    // Kept as its own try/catch rather than next(error) — this is
+    // deliberate business logic (a specific, safe failure message for a
+    // third-party send failure), not generic error handling.
     try {
       if (method === "email") {
         await sendResetEmail({ to: user.email, code, fullName: user.fullName });
@@ -621,8 +614,7 @@ export const forgotPassword = async (req, res) => {
       maskedContact: maskContact(clean, method),
     });
   } catch (error) {
-    logError("auth", "Forgot password error", error);
-    res.status(500).json({ message: "Server error" });
+    next(error);
   }
 };
 
@@ -630,7 +622,7 @@ export const forgotPassword = async (req, res) => {
 // @route   POST /api/auth/resend-reset-code
 // @body    { identifier, channel }  -- channel: "sms" | "whatsapp" (phone only)
 // @access  Public
-export const resendResetCode = async (req, res) => {
+export const resendResetCode = async (req, res, next) => {
   try {
     const { identifier, channel } = req.body;
     if (!identifier) return res.status(400).json({ message: "Missing identifier" });
@@ -676,8 +668,7 @@ export const resendResetCode = async (req, res) => {
     logSuccess("auth", "Reset code resent", { userId: user._id, channel: useChannel });
     res.json({ message: `Code resent via ${useChannel}.`, channel: useChannel });
   } catch (error) {
-    logError("auth", "Resend reset code error", error);
-    res.status(500).json({ message: "Server error" });
+    next(error);
   }
 };
 
@@ -685,7 +676,7 @@ export const resendResetCode = async (req, res) => {
 // @route   POST /api/auth/verify-reset-code
 // @body    { identifier, code }
 // @access  Public
-export const verifyResetCode = async (req, res) => {
+export const verifyResetCode = async (req, res, next) => {
   try {
     const { identifier, code } = req.body;
     if (!identifier || !code) {
@@ -735,8 +726,7 @@ export const verifyResetCode = async (req, res) => {
     logSuccess("auth", "Reset code verified", { userId: user._id });
     res.json({ message: "Code verified", resetToken });
   } catch (error) {
-    logError("auth", "Verify reset code error", error);
-    res.status(500).json({ message: "Server error" });
+    next(error);
   }
 };
 
@@ -744,7 +734,7 @@ export const verifyResetCode = async (req, res) => {
 // @route   POST /api/auth/reset-password
 // @body    { resetToken, newPassword }
 // @access  Public
-export const resetPasswordWithCode = async (req, res) => {
+export const resetPasswordWithCode = async (req, res, next) => {
   try {
     const { resetToken, newPassword } = req.body;
     logStart("auth", "Resetting password via token");
@@ -775,7 +765,6 @@ export const resetPasswordWithCode = async (req, res) => {
     logSuccess("auth", "Password reset via token", { userId: user._id });
     res.json({ message: "Password reset successful" });
   } catch (error) {
-    logError("auth", "Reset password error", error);
-    res.status(500).json({ message: "Server error" });
+    next(error);
   }
 };
