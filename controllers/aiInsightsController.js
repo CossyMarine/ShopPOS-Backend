@@ -8,6 +8,7 @@ import Attendance from "../models/Attendance.js";
 import LeaveRequest from "../models/LeaveRequest.js";
 import WageProfile from "../models/WageProfile.js";
 import { getKenyanDayBounds } from "../utils/dateHelpers.js";
+import { AppError } from "../utils/AppError.js";
 
 // Override with GEMINI_MODEL in .env if you want a different model.
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.1-flash";
@@ -174,9 +175,7 @@ const buildStoreSnapshot = async (branchId) => {
 const callGemini = async (snapshot) => {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    const err = new Error("GEMINI_API_KEY is not set on the server");
-    err.status = 500;
-    throw err;
+    throw new AppError("GEMINI_API_KEY is not set on the server", 500);
   }
 
   const prompt = `
@@ -258,7 +257,7 @@ Respond with raw JSON only:
 // @desc    Run a live AI audit across stock, voids, attendance, and payroll
 // @route   GET /api/ai-insights/audit?branch=
 // @access  Protected — admin, branchManager
-export const runStoreAudit = async (req, res) => {
+export const runStoreAudit = async (req, res, next) => {
   try {
     const branchId = req.query.branch || null;
     console.log(`[aiInsights] Starting store audit${branchId ? ` for branch ${branchId}` : " (all branches)"}`);
@@ -275,13 +274,11 @@ export const runStoreAudit = async (req, res) => {
       insights,
     });
   } catch (error) {
-    console.error("[aiInsights] ❌ Error running AI store audit:", error.message);
-    if (error.response?.data) {
-      console.error("[aiInsights] ❌ Full upstream error body:", JSON.stringify(error.response.data));
-    }
-    res
-      .status(error.response?.status || error.status || 500)
-      .json({ message: "Failed to run AI store audit", error: error.message });
+    // Preserve Gemini's upstream status (e.g. 429 rate limit, 400 bad
+    // request) instead of letting it flatten to a generic 500 — AppError
+    // carries statusCode through the centralized handler; a bare
+    // next(error) would not.
+    next(new AppError(error.message, error.response?.status || error.status || 500));
   }
 };
 
@@ -290,11 +287,11 @@ export const runStoreAudit = async (req, res) => {
 //          a valid model name, then set GEMINI_MODEL accordingly.
 // @route   GET /api/ai-insights/list-models
 // @access  Protected — admin
-export const listGeminiModels = async (req, res) => {
+export const listGeminiModels = async (req, res, next) => {
   try {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      return res.status(500).json({ message: "GEMINI_API_KEY is not set on the server" });
+      throw new AppError("GEMINI_API_KEY is not set on the server", 500);
     }
 
     const { data } = await axios.get(
@@ -312,10 +309,6 @@ export const listGeminiModels = async (req, res) => {
 
     res.json({ count: usable.length, models: usable });
   } catch (error) {
-    console.error("[aiInsights] ❌ Error listing Gemini models:", error.response?.data || error.message);
-    res.status(error.response?.status || 500).json({
-      message: "Failed to list Gemini models",
-      error: error.response?.data || error.message,
-    });
+    next(new AppError(error.message, error.response?.status || 500));
   }
 };
