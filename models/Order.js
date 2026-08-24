@@ -16,6 +16,7 @@ const orderItemSchema = new mongoose.Schema(
     // (manual scan fallback) or receipts predating this field.
     costPriceAtSale: { type: Number, default: null },
   },
+  vatClass: { type: String, enum: ["standard", "zero", "exempt"], default: "standard" },
   { _id: false }
 );
 
@@ -27,6 +28,11 @@ const orderSchema = new mongoose.Schema(
     branch:   { type: mongoose.Schema.Types.ObjectId, ref: "Branch", required: true },
     items:    [orderItemSchema],
     subtotal: { type: Number, required: true },
+    vatEnabled: { type: Boolean, default: false },
+    vatRate: { type: Number, default: 0 },
+    priceMode: { type: String, enum: ["exclusive", "inclusive"], default: "exclusive" },
+    vatAmount: { type: Number, default: 0 },
+    totalDue: { type: Number, required: true }, 
     status: { type: String, enum: ["pending", "completed", "cancelled"], default: "pending" },
     source: { type: String, enum: ["staff", "online"], default: "staff" },
     customer: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
