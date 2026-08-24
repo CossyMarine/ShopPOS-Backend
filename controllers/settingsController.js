@@ -19,7 +19,7 @@ export const getSettings = async (req, res) => {
 // @access  Protected — admin
 
 export const updateSettings = async (req, res) => {
-  const { tillNumber, tillName, whatsappNumber, callNumber, reward, assumeTableNumberCustomer, assumeTableNumberWaiter, allowPrintingDuringPayment } = req.body;
+  const { tillNumber, tillName, whatsappNumber, callNumber, reward, vat, assumeTableNumberCustomer, assumeTableNumberWaiter, allowPrintingDuringPayment } = req.body;
   try {
     const settings = await AdminSettings.getSettings();
     if (tillNumber !== undefined) settings.tillNumber = tillNumber;
@@ -32,6 +32,10 @@ export const updateSettings = async (req, res) => {
     if (reward && typeof reward === "object") {
       const current = settings.reward.toObject ? settings.reward.toObject() : settings.reward;
       settings.reward = { ...current, ...reward };
+    }
+    if (vat && typeof vat === "object") {
+      const current = settings.vat.toObject ? settings.vat.toObject() : settings.vat;
+      settings.vat = { ...current, ...vat };
     }
     await settings.save();
     res.json(settings);
@@ -56,6 +60,11 @@ export const getPublicSettings = async (req, res) => {
         pointValueKes: s.reward.pointValueKes,
         targetPoints: s.reward.targetPoints,
         description: s.reward.description,
+      },
+      vat: {
+        enabled: s.vat.enabled,
+        rate: s.vat.rate,
+        priceMode: s.vat.priceMode,
       },
     });
   } catch (error) {
