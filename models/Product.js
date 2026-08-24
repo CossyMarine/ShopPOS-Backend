@@ -24,6 +24,7 @@ const productSchema = new mongoose.Schema(
     name:          { type: String, required: true, trim: true },
     barcode:       { type: String, trim: true, unique: true, sparse: true }, // EAN-13/CODE128/QR payload — the EACH barcode
     category:      { type: String, default: "General", trim: true },
+    vatClass:      { type: String, enum: ["standard", "zero", "exempt"], default: "standard" },
     unit:          { type: mongoose.Schema.Types.ObjectId, ref: "InventoryUnit", required: true }, // the LOOSE/each unit, e.g. Kilogram
 
     // How many selling units ("each") make up one purchase case/sack.
