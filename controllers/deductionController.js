@@ -1,8 +1,8 @@
 // controllers/deductionController.js
 import Deduction from "../models/Deduction.js";
-import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
+import { logStart, logSuccess } from "../utils/requestLogger.js";
 
-export const listDeductions = async (req, res) => {
+export const listDeductions = async (req, res, next) => {
   try {
     logStart("deduction", "Loading deductions", { branch: req.user.isAdmin ? "all" : req.user.branch });
 
@@ -15,12 +15,11 @@ export const listDeductions = async (req, res) => {
     logSuccess("deduction", "Deductions loaded", { count: deductions.length });
     res.json(deductions);
   } catch (error) {
-    logError("deduction", "Error loading deductions", error);
-    res.status(500).json({ message: "Failed to load deductions", error: error.message });
+    next(error);
   }
 };
 
-export const createDeduction = async (req, res) => {
+export const createDeduction = async (req, res, next) => {
   const { name, calcType, amount, appliesTo, users, branch } = req.body;
 
   if (!name || !["fixed", "percentage"].includes(calcType) || amount == null) {
@@ -46,12 +45,11 @@ export const createDeduction = async (req, res) => {
     logSuccess("deduction", "Deduction created", { deductionId: deduction._id, name });
     res.status(201).json(deduction);
   } catch (error) {
-    logError("deduction", "Error creating deduction", error);
-    res.status(500).json({ message: "Failed to create deduction", error: error.message });
+    next(error);
   }
 };
 
-export const updateDeduction = async (req, res) => {
+export const updateDeduction = async (req, res, next) => {
   try {
     logStart("deduction", "Updating deduction", { deductionId: req.params.id });
 
@@ -78,12 +76,11 @@ export const updateDeduction = async (req, res) => {
     logSuccess("deduction", "Deduction updated", { deductionId: deduction._id });
     res.json(deduction);
   } catch (error) {
-    logError("deduction", "Error updating deduction", error);
-    res.status(500).json({ message: "Failed to update deduction", error: error.message });
+    next(error);
   }
 };
 
-export const deleteDeduction = async (req, res) => {
+export const deleteDeduction = async (req, res, next) => {
   try {
     logStart("deduction", "Deleting deduction", { deductionId: req.params.id });
 
@@ -101,7 +98,6 @@ export const deleteDeduction = async (req, res) => {
     logSuccess("deduction", "Deduction deleted", { deductionId: req.params.id });
     res.json({ message: "Deduction removed" });
   } catch (error) {
-    logError("deduction", "Error deleting deduction", error);
-    res.status(500).json({ message: "Failed to delete deduction", error: error.message });
+    next(error);
   }
 };
