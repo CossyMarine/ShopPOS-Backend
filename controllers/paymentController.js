@@ -6,7 +6,7 @@ import mongoose from "mongoose";
 import Receipt from "../models/Receipt.js";
 import { applyPaymentToReceipt } from "../utils/walletPayments.js";
 import { getDateRangePreset } from "../utils/dateHelpers.js";
-import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
+import { logStart, logSuccess } from "../utils/requestLogger.js";
 
 // Builds a Mongo range from either a named preset (Kenya/EAT-anchored,
 // via utils/dateHelpers.js) or explicit from/to ISO dates from the calendar picker.
@@ -28,7 +28,7 @@ const resolveDateRange = ({ preset, from, to }) => {
 //          bills — filterable by method/branch, searchable by bill/cashier/reference/payer.
 // @route   GET /api/payments/transactions?page=1&limit=15&method=cash&branch=&q=&from=&to=&preset=
 // @access  Protected — admin, branchManager (auto-scoped to own branch via sameBranch)
-export const getTransactions = async (req, res) => {
+export const getTransactions = async (req, res, next) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.max(1, parseInt(req.query.limit) || 15);
@@ -112,8 +112,7 @@ export const getTransactions = async (req, res) => {
       totalPages: Math.max(1, Math.ceil(total / limit)),
     });
   } catch (error) {
-    logError("payment", "Error fetching transactions", error);
-    res.status(500).json({ message: "Failed to fetch transactions" });
+    next(error);
   }
 };
 
@@ -125,7 +124,7 @@ export const getTransactions = async (req, res) => {
 //          ?from=&to= ISO dates for a custom calendar range.
 // @route   GET /api/payments/summary
 // @access  Protected — admin, branchManager
-export const getPaymentSummary = async (req, res) => {
+export const getPaymentSummary = async (req, res, next) => {
   try {
     const { from, to, preset, branch } = req.query;
     logStart("payment", "Loading payment summary", { preset, from, to, branch });
@@ -178,8 +177,7 @@ export const getPaymentSummary = async (req, res) => {
     logSuccess("payment", "Payment summary loaded", summary);
     res.json(summary);
   } catch (error) {
-    logError("payment", "Error fetching payment summary", error);
-    res.status(500).json({ message: "Failed to fetch payment summary" });
+    next(error);
   }
 };
 
@@ -187,7 +185,7 @@ export const getPaymentSummary = async (req, res) => {
 //          optionally scoped to one branch
 // @route   GET /api/payments/pending?branch=
 // @access  Protected — admin, branchManager
-export const getPendingManualPayments = async (req, res) => {
+export const getPendingManualPayments = async (req, res, next) => {
   try {
     logStart("payment", "Loading pending manual payments", { branch: req.query.branch || "all" });
 
@@ -222,15 +220,14 @@ export const getPendingManualPayments = async (req, res) => {
     logSuccess("payment", "Pending manual payments loaded", { count: pending.length });
     res.json(pending);
   } catch (error) {
-    logError("payment", "Error fetching pending manual payments", error);
-    res.status(500).json({ message: "Failed to fetch pending payments" });
+    next(error);
   }
 };
 
 // @desc    Count of all pending manual-till submissions — powers the sidebar badge
 // @route   GET /api/payments/pending/count?branch=
 // @access  Protected — admin, branchManager
-export const getPendingManualPaymentsCount = async (req, res) => {
+export const getPendingManualPaymentsCount = async (req, res, next) => {
   try {
     logStart("payment", "Counting pending manual payments", { branch: req.query.branch || "all" });
 
@@ -245,8 +242,7 @@ export const getPendingManualPaymentsCount = async (req, res) => {
     logSuccess("payment", "Pending manual payments counted", { count });
     res.json({ count });
   } catch (error) {
-    logError("payment", "Error counting pending manual payments", error);
-    res.status(500).json({ message: "Failed to count pending payments" });
+    next(error);
   }
 };
 
@@ -254,7 +250,7 @@ export const getPendingManualPaymentsCount = async (req, res) => {
 //          it to the bill (may flip status to partial/paid) and credits cashback.
 // @route   PATCH /api/payments/pending/:receiptId/:paymentId/confirm
 // @access  Protected — admin, branchManager
-export const confirmManualPayment = async (req, res) => {
+export const confirmManualPayment = async (req, res, next) => {
   const { receiptId, paymentId } = req.params;
   try {
     logStart("payment", "Confirming manual payment", { receiptId, paymentId });
@@ -293,8 +289,7 @@ export const confirmManualPayment = async (req, res) => {
     logSuccess("payment", "Manual payment confirmed", { receiptId, paymentId, amount, newStatus: updated.status });
     res.json({ message: "Payment confirmed", receipt: updated });
   } catch (error) {
-    logError("payment", "Error confirming manual payment", error);
-    res.status(500).json({ message: "Failed to confirm payment", error: error.message });
+    next(error);
   }
 };
 
@@ -302,7 +297,7 @@ export const confirmManualPayment = async (req, res) => {
 //          the bill's balance is untouched since it was never applied.
 // @route   PATCH /api/payments/pending/:receiptId/:paymentId/reject
 // @access  Protected — admin, branchManager
-export const rejectManualPayment = async (req, res) => {
+export const rejectManualPayment = async (req, res, next) => {
   const { receiptId, paymentId } = req.params;
   try {
     logStart("payment", "Rejecting manual payment", { receiptId, paymentId });
@@ -329,7 +324,6 @@ export const rejectManualPayment = async (req, res) => {
     logSuccess("payment", "Manual payment rejected", { receiptId, paymentId });
     res.json({ message: "Payment rejected", receipt });
   } catch (error) {
-    logError("payment", "Error rejecting manual payment", error);
-    res.status(500).json({ message: "Failed to reject payment", error: error.message });
+    next(error);
   }
 };
