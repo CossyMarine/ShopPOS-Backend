@@ -8,7 +8,7 @@ import Attendance from "../models/Attendance.js";
 import LeaveRequest from "../models/LeaveRequest.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
-import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
+import { logStart, logSuccess } from "../utils/requestLogger.js";
 import { resolveEffectiveWage } from "../utils/resolveWage.js";
 import { getKenyanDate, getKenyanDateFor, getKenyanDayBounds } from "../utils/dateHelpers.js";
 
@@ -254,7 +254,7 @@ const upsertPayslipForUser = async (user, wage, period, req, selectedIds = undef
   return { skipped: false, payslip };
 };
 
-export const runPayrollForUser = async (req, res) => {
+export const runPayrollForUser = async (req, res, next) => {
   const { userId, period } = req.body;
   if (!userId || !/^\d{4}-\d{2}$/.test(period || "")) {
     return res.status(400).json({ message: "userId and period ('YYYY-MM') are required" });
@@ -290,8 +290,7 @@ export const runPayrollForUser = async (req, res) => {
     });
     res.status(201).json(result.payslip);
   } catch (error) {
-    logError("payroll", "Error running payroll", error);
-    res.status(500).json({ message: "Failed to run payroll", error: error.message });
+    next(error);
   }
 };
 
@@ -300,7 +299,7 @@ export const runPayrollForUser = async (req, res) => {
 // for the given period in one go. `applyDeductions` + `selectedDeductionIds`
 // let the admin override, for THIS RUN ONLY, which deductions get taken —
 // it does not touch each person's saved wage profile settings.
-export const runBulkPayroll = async (req, res) => {
+export const runBulkPayroll = async (req, res, next) => {
   const { period, role, branch, applyDeductions, selectedDeductionIds } = req.body;
   if (!/^\d{4}-\d{2}$/.test(period || "")) {
     return res.status(400).json({ message: "period ('YYYY-MM') is required" });
@@ -351,8 +350,7 @@ export const runBulkPayroll = async (req, res) => {
       skipped: results.skipped,
     });
   } catch (error) {
-    logError("payroll", "Error running bulk payroll", error);
-    res.status(500).json({ message: "Failed to run bulk payroll", error: error.message });
+    next(error);
   }
 };
 
@@ -376,7 +374,7 @@ const confirmOnePayslip = async (id, req) => {
   return { skipped: false, payslip: slip };
 };
 
-export const confirmPayslip = async (req, res) => {
+export const confirmPayslip = async (req, res, next) => {
   try {
     logStart("payroll", "Confirming payslip", { payslipId: req.params.id });
 
@@ -389,14 +387,13 @@ export const confirmPayslip = async (req, res) => {
     logSuccess("payroll", "Payslip confirmed", { payslipId: result.payslip._id, netPayable: result.payslip.netPayable });
     res.json(result.payslip);
   } catch (error) {
-    logError("payroll", "Error confirming payslip", error);
-    res.status(500).json({ message: "Failed to confirm payslip", error: error.message });
+    next(error);
   }
 };
 
 // NEW — confirm/disburse a batch of pending payslips at once (e.g. every
 // payslip produced by a bulk run).
-export const confirmBulkPayslips = async (req, res) => {
+export const confirmBulkPayslips = async (req, res, next) => {
   const { payslipIds } = req.body;
   if (!Array.isArray(payslipIds) || payslipIds.length === 0) {
     return res.status(400).json({ message: "payslipIds (array) is required" });
@@ -420,12 +417,11 @@ export const confirmBulkPayslips = async (req, res) => {
 
     res.json({ count: confirmed.length, skippedCount: skipped.length, totalNet, confirmed, skipped });
   } catch (error) {
-    logError("payroll", "Error confirming bulk payslips", error);
-    res.status(500).json({ message: "Failed to confirm payouts", error: error.message });
+    next(error);
   }
 };
 
-export const listPayslips = async (req, res) => {
+export const listPayslips = async (req, res, next) => {
   try {
     logStart("payroll", "Loading payslips", {
       period: req.query.period, user: req.query.user, branch: req.query.branch,
@@ -442,20 +438,18 @@ export const listPayslips = async (req, res) => {
     logSuccess("payroll", "Payslips loaded", { count: slips.length });
     res.json(slips);
   } catch (error) {
-    logError("payroll", "Error loading payslips", error);
-    res.status(500).json({ message: "Failed to load payslips", error: error.message });
+    next(error);
   }
 };
 
-export const getMyPayslips = async (req, res) => {
+export const getMyPayslips = async (req, res, next) => {
   try {
     logStart("payroll", "Loading my payslips", { user: req.user._id });
     const slips = await Payslip.find({ user: req.user._id, status: "paid" }).sort({ period: -1 });
     logSuccess("payroll", "My payslips loaded", { count: slips.length });
     res.json(slips);
   } catch (error) {
-    logError("payroll", "Error loading my payslips", error);
-    res.status(500).json({ message: "Failed to load payslips", error: error.message });
+    next(error);
   }
 };
 
@@ -474,7 +468,7 @@ export const estimateMonthlyGross = (wage) => {
 
 // NEW — powers the "Est. Monthly Payroll" + "Paid This Month" stat cards,
 // with the same all/role/branch scoping as the global payout panel.
-export const getPayrollSummary = async (req, res) => {
+export const getPayrollSummary = async (req, res, next) => {
   try {
     const { role, branch } = req.query;
     logStart("payroll", "Loading payroll summary", { role: role || "all", branch: branch || "own" });
@@ -506,15 +500,14 @@ export const getPayrollSummary = async (req, res) => {
       payoutsThisMonth: paidThisMonth.length,               // NEW
     });
   } catch (error) {
-    logError("payroll", "Error loading payroll summary", error);
-    res.status(500).json({ message: "Failed to load payroll summary", error: error.message });
+    next(error);
   }
 };
 
 // NEW — everyone whose configured payday (or, for hourly staff, whose
 // completed/assumed-complete shift) lands on today and hasn't been paid
 // for the current period yet. Powers the due-for-payout banner.
-export const getPayrollDueToday = async (req, res) => {
+export const getPayrollDueToday = async (req, res, next) => {
   try {
     logStart("payroll", "Loading payroll due today");
 
@@ -565,14 +558,13 @@ export const getPayrollDueToday = async (req, res) => {
     logSuccess("payroll", "Payroll due today loaded", { count: due.length });
     res.json({ count: due.length, due });
   } catch (error) {
-    logError("payroll", "Error loading payroll due today", error);
-    res.status(500).json({ message: "Failed to load due payouts", error: error.message });
+    next(error);
   }
 };
 
 // NEW — AI read on payroll health, either for one person (?userId=) or the
 // whole scope (branch for managers, everything for admins).
-export const getPayrollInsight = async (req, res) => {
+export const getPayrollInsight = async (req, res, next) => {
   const { userId } = req.query;
   try {
     logStart("payroll", "Generating payroll insight", { userId: userId || "global" });
@@ -629,7 +621,6 @@ normal or needs attention", "notes": ["short observations, max 4"]}
     logSuccess("payroll", "Payroll insight generated", { scope: snapshot.scope });
     res.json(parsed);
   } catch (error) {
-    logError("payroll", "Error generating payroll insight", error);
-    res.status(500).json({ message: "Failed to generate payroll insight", error: error.message });
+    next(error);
   }
 };
