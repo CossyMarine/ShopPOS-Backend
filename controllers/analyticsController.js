@@ -17,7 +17,8 @@ import Payslip from "../models/Payslip.js";
 import WageProfile from "../models/WageProfile.js";
 import { getKenyanDate, getKenyanDayBounds } from "../utils/dateHelpers.js";
 import { estimateMonthlyGross } from "./payrollController.js";
-import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
+import { logStart, logSuccess } from "../utils/requestLogger.js";
+import { badRequest } from "../utils/AppError.js";
 
 const { ObjectId } = mongoose.Types;
 
@@ -60,12 +61,12 @@ export const resolveAnalyticsRange = (range, from, to) => {
     }
     case "custom": {
       if (!from || !to) {
-        throw new Error("Custom range requires both from and to (YYYY-MM-DD)");
+        throw badRequest("Custom range requires both from and to (YYYY-MM-DD)");
       }
       const start = new Date(`${from}T00:00:00.000+03:00`);
       const end = new Date(`${to}T23:59:59.999+03:00`);
       if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-        throw new Error("Invalid from/to date");
+        throw badRequest("Invalid from/to date");
       }
       return { start, end };
     }
@@ -79,7 +80,7 @@ export const resolveAnalyticsRange = (range, from, to) => {
 // ---------------------------------------------------------------------
 // GET /api/analytics/overview?branch=&range=today|last_7_days|last_30_days|year|custom&from=&to=
 // ---------------------------------------------------------------------
-export const getAnalyticsOverview = async (req, res) => {
+export const getAnalyticsOverview = async (req, res, next) => {
   try {
     const { branch, range = "today", from, to } = req.query;
     logStart("analytics", "Loading analytics overview", { branch: branch || "all", range, from, to });
@@ -385,8 +386,7 @@ export const getAnalyticsOverview = async (req, res) => {
     });
     res.json(responseBody);
   } catch (error) {
-    logError("analytics", "Error loading analytics overview", error);
-    res.status(500).json({ message: "Failed to load analytics", error: error.message });
+    next(error);
   }
 };
 
@@ -435,4 +435,4 @@ function costEstimationStages() {
       },
     },
   ];
-                  }
+    }
