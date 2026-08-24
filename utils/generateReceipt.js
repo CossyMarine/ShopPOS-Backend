@@ -26,6 +26,11 @@ export const generateReceiptForOrder = async (order, { customer } = {}) => {
     source: order.source || "staff",
     items: order.items,
     subtotal: order.subtotal,
+    vatEnabled: order.vatEnabled,
+    vatRate: order.vatRate,
+    priceMode: order.priceMode,
+    vatAmount: order.vatAmount,
+    totalDue: order.totalDue,
     customer: customer || order.customer || null,
   });
 
