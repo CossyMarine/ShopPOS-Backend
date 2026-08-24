@@ -2,13 +2,13 @@
 import mongoose from "mongoose";
 import Receipt from "../../models/Receipt.js";
 import { getKenyanDayBounds } from "../../utils/dateHelpers.js";
-import { logStart, logSuccess, logError } from "../../utils/requestLogger.js";
+import { logStart, logSuccess } from "../../utils/requestLogger.js";
 
 // @desc    Get all unpaid or partially-paid receipts for a branch
 //          (Super Admin can omit ?branch= to see every branch)
 // @route   GET /api/receipts?branch=
 // @access  Protected — cashier, branchManager, admin (auto-scoped via sameBranch)
-export const getReceipts = async (req, res) => {
+export const getReceipts = async (req, res, next) => {
   try {
     logStart("receiptQuery", "Loading unpaid/partial receipts", { branch: req.query.branch || "all" });
 
@@ -20,15 +20,14 @@ export const getReceipts = async (req, res) => {
     logSuccess("receiptQuery", "Receipts loaded", { count: receipts.length });
     res.json(receipts);
   } catch (error) {
-    logError("receiptQuery", "Error fetching receipts", error);
-    res.status(500).json({ message: "Failed to fetch receipts" });
+    next(error);
   }
 };
 
 // @desc    Get paid receipts (most recent first) — branchManager/admin view
 // @route   GET /api/receipts/paid?branch=
 // @access  Protected — branchManager, admin
-export const getPaidReceipts = async (req, res) => {
+export const getPaidReceipts = async (req, res, next) => {
   try {
     logStart("receiptQuery", "Loading paid receipts", { branch: req.query.branch || "all" });
 
@@ -40,8 +39,7 @@ export const getPaidReceipts = async (req, res) => {
     logSuccess("receiptQuery", "Paid receipts loaded", { count: receipts.length });
     res.json(receipts);
   } catch (error) {
-    logError("receiptQuery", "Error fetching paid receipts", error);
-    res.status(500).json({ message: "Failed to fetch paid receipts" });
+    next(error);
   }
 };
 
@@ -50,7 +48,7 @@ export const getPaidReceipts = async (req, res) => {
 //          on it, unlike the restaurant's per-waiter assignment flow.
 // @route   GET /api/receipts/online-pending?branch=
 // @access  Protected — cashier, branchManager, admin
-export const getPendingOnlineReceipts = async (req, res) => {
+export const getPendingOnlineReceipts = async (req, res, next) => {
   try {
     logStart("receiptQuery", "Loading pending online receipts", { branch: req.query.branch || "all" });
 
@@ -62,15 +60,14 @@ export const getPendingOnlineReceipts = async (req, res) => {
     logSuccess("receiptQuery", "Pending online receipts loaded", { count: receipts.length });
     res.json(receipts);
   } catch (error) {
-    logError("receiptQuery", "Error fetching pending online receipts", error);
-    res.status(500).json({ message: "Failed to fetch pending online receipts" });
+    next(error);
   }
 };
 
 // @desc    Today's paid vs unpaid totals — powers the "All" tab summary bar
 // @route   GET /api/receipts/summary/today?branch=
 // @access  Protected — cashier, branchManager, admin
-export const getReceiptsTodaySummary = async (req, res) => {
+export const getReceiptsTodaySummary = async (req, res, next) => {
   try {
     logStart("receiptQuery", "Loading today's receipt summary", { branch: req.query.branch || "all" });
 
@@ -100,15 +97,14 @@ export const getReceiptsTodaySummary = async (req, res) => {
     logSuccess("receiptQuery", "Today's summary loaded", summary);
     res.json(summary);
   } catch (error) {
-    logError("receiptQuery", "Error fetching today's summary", error);
-    res.status(500).json({ message: "Failed to fetch summary" });
+    next(error);
   }
 };
 
 // @desc    Get unpaid/partial receipts for a specific cashier
 // @route   GET /api/receipts/cashier/:name
 // @access  Protected
-export const getReceiptsByCashier = async (req, res) => {
+export const getReceiptsByCashier = async (req, res, next) => {
   try {
     const { name } = req.params;
     logStart("receiptQuery", "Loading receipts by cashier", { cashierName: name });
@@ -120,15 +116,14 @@ export const getReceiptsByCashier = async (req, res) => {
     logSuccess("receiptQuery", "Receipts by cashier loaded", { cashierName: name, count: receipts.length });
     res.json(receipts);
   } catch (error) {
-    logError("receiptQuery", "Error fetching receipts by cashier", error);
-    res.status(500).json({ message: "Failed to fetch receipts" });
+    next(error);
   }
 };
 
 // @desc    Get a single receipt (used for print / add-items refresh)
 // @route   GET /api/receipts/:id
 // @access  Protected
-export const getReceiptById = async (req, res) => {
+export const getReceiptById = async (req, res, next) => {
   try {
     logStart("receiptQuery", "Loading receipt by id", { receiptId: req.params.id });
 
@@ -145,8 +140,7 @@ export const getReceiptById = async (req, res) => {
     logSuccess("receiptQuery", "Receipt loaded", { receiptId: req.params.id, status: receipt.status });
     res.json(receipt);
   } catch (error) {
-    logError("receiptQuery", "Error fetching receipt", error);
-    res.status(500).json({ message: "Failed to fetch receipt" });
+    next(error);
   }
 };
 
@@ -155,7 +149,7 @@ export const getReceiptById = async (req, res) => {
 //          cross-branch view.
 // @route   GET /api/receipts/history?page=1&limit=10&q=search&from=ISO&to=ISO&branch=
 // @access  Protected
-export const getReceiptHistory = async (req, res) => {
+export const getReceiptHistory = async (req, res, next) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.max(1, parseInt(req.query.limit) || 10);
@@ -195,15 +189,14 @@ export const getReceiptHistory = async (req, res) => {
       totalPages: Math.max(1, Math.ceil(total / limit)),
     });
   } catch (error) {
-    logError("receiptQuery", "Error fetching bill history", error);
-    res.status(500).json({ message: "Failed to fetch bill history" });
+    next(error);
   }
 };
 
 // @desc    Paginated bill history for one cashier, every status, newest first
 // @route   GET /api/receipts/cashier/:name/history?page=1&limit=4&q=search&from=ISO&to=ISO
 // @access  Protected
-export const getReceiptHistoryByCashier = async (req, res) => {
+export const getReceiptHistoryByCashier = async (req, res, next) => {
   try {
     const { name } = req.params;
     const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -239,7 +232,6 @@ export const getReceiptHistoryByCashier = async (req, res) => {
       totalPages: Math.max(1, Math.ceil(total / limit)),
     });
   } catch (error) {
-    logError("receiptQuery", "Error fetching bill history", error);
-    res.status(500).json({ message: "Failed to fetch bill history" });
+    next(error);
   }
 };
