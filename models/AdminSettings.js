@@ -15,6 +15,18 @@ const rewardSettingsSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const vatSettingsSchema = new mongoose.Schema(
+  {
+    enabled: { type: Boolean, default: true },
+    // percent, e.g. 16 = 16%
+    rate: { type: Number, default: 16 },
+    // "exclusive" = sellingPrice excludes VAT, VAT added on top at checkout (default)
+    // "inclusive" = sellingPrice already includes VAT
+    priceMode: { type: String, enum: ["exclusive", "inclusive"], default: "exclusive" },
+  },
+  { _id: false }
+);
+
 const adminSettingsSchema = new mongoose.Schema(
   {
     // Singleton lock — only one document ever exists
@@ -36,6 +48,7 @@ const adminSettingsSchema = new mongoose.Schema(
     allowPrintingDuringPayment: { type: Boolean, default: false },
 
     reward: { type: rewardSettingsSchema, default: () => ({}) },
+    vat: { type: vatSettingsSchema, default: () => ({}) },
   },
   { timestamps: true }
 );
