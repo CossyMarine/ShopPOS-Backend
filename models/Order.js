@@ -15,8 +15,8 @@ const orderItemSchema = new mongoose.Schema(
     // spanned more than one batch). null only for lines with no productId
     // (manual scan fallback) or receipts predating this field.
     costPriceAtSale: { type: Number, default: null },
+    vatClass: { type: String, enum: ["standard", "zero", "exempt"], default: "standard" },
   },
-  vatClass: { type: String, enum: ["standard", "zero", "exempt"], default: "standard" },
   { _id: false }
 );
 
