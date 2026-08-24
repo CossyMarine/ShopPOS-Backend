@@ -1,11 +1,11 @@
 // controllers/attendanceController.js
 import Attendance from "../models/Attendance.js";
-import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
+import { logStart, logSuccess } from "../utils/requestLogger.js";
 
 // @desc    Clock in for the logged-in user (storekeeper/staff)
 // @route   POST /api/attendance/clock-in
 // @access  Protected — storekeeper, staff, branchManager
-export const clockIn = async (req, res) => {
+export const clockIn = async (req, res, next) => {
   const user = req.user._id;
 
   if (!req.user.branch) {
@@ -29,15 +29,14 @@ export const clockIn = async (req, res) => {
     logSuccess("attendance", "Clocked in", { user, recordId: record._id });
     res.status(201).json(record);
   } catch (error) {
-    logError("attendance", "Error clocking in", error);
-    res.status(500).json({ message: "Failed to clock in", error: error.message });
+    next(error);
   }
 };
 
 // @desc    Clock out — closes the user's own open record
 // @route   POST /api/attendance/clock-out
 // @access  Protected
-export const clockOut = async (req, res) => {
+export const clockOut = async (req, res, next) => {
   const { notes } = req.body;
   const user = req.user._id;
 
@@ -62,30 +61,28 @@ export const clockOut = async (req, res) => {
     logSuccess("attendance", "Clocked out", { user, recordId: record._id, hoursWorked });
     res.json(record);
   } catch (error) {
-    logError("attendance", "Error clocking out", error);
-    res.status(500).json({ message: "Failed to clock out", error: error.message });
+    next(error);
   }
 };
 
 // @desc    Get the logged-in user's own open attendance record, or null
 // @route   GET /api/attendance/current
 // @access  Protected
-export const getCurrentAttendance = async (req, res) => {
+export const getCurrentAttendance = async (req, res, next) => {
   try {
     logStart("attendance", "Fetching current attendance", { user: req.user._id });
     const record = await Attendance.findOne({ user: req.user._id, status: "open" });
     logSuccess("attendance", "Current attendance fetched", { user: req.user._id, found: Boolean(record) });
     res.json(record);
   } catch (error) {
-    logError("attendance", "Error fetching attendance status", error);
-    res.status(500).json({ message: "Failed to fetch attendance status", error: error.message });
+    next(error);
   }
 };
 
 // @desc    Admin/branchManager — attendance history for one user, filterable by date
 // @route   GET /api/attendance/history/:userId?from=&to=
 // @access  Protected — admin, branchManager
-export const getAttendanceHistory = async (req, res) => {
+export const getAttendanceHistory = async (req, res, next) => {
   const { userId } = req.params;
   const { from, to } = req.query;
   try {
@@ -102,15 +99,14 @@ export const getAttendanceHistory = async (req, res) => {
     logSuccess("attendance", "Attendance history loaded", { userId, count: records.length });
     res.json(records);
   } catch (error) {
-    logError("attendance", "Error loading attendance history", error);
-    res.status(500).json({ message: "Failed to load attendance history", error: error.message });
+    next(error);
   }
 };
 
 // @desc    Admin/branchManager — everyone currently clocked in at a branch (live view)
 // @route   GET /api/attendance/on-shift?branch=
 // @access  Protected — admin, branchManager
-export const getOnShiftNow = async (req, res) => {
+export const getOnShiftNow = async (req, res, next) => {
   try {
     logStart("attendance", "Loading on-shift staff", { branch: req.query.branch || "all" });
 
@@ -121,7 +117,6 @@ export const getOnShiftNow = async (req, res) => {
     logSuccess("attendance", "On-shift staff loaded", { count: records.length });
     res.json(records);
   } catch (error) {
-    logError("attendance", "Error loading on-shift staff", error);
-    res.status(500).json({ message: "Failed to load on-shift staff", error: error.message });
+    next(error);
   }
 };
