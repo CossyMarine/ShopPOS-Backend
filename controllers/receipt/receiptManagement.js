@@ -3,7 +3,7 @@ import Receipt from "../../models/Receipt.js";
 import Order from "../../models/Order.js";
 import Product from "../../models/Product.js";
 import { deductStockFIFO, restockItems } from "../../utils/productStock.js";
-import { logStart, logSuccess, logError } from "../../utils/requestLogger.js";
+import { logStart, logSuccess } from "../../utils/requestLogger.js";
 
 // @desc    Add items to an unpaid bill — e.g. a held/parked sale the cashier
 //          is resuming, or a correction before the customer pays. Deducts
@@ -11,7 +11,7 @@ import { logStart, logSuccess, logError } from "../../utils/requestLogger.js";
 //          bill were already deducted when the sale was first created).
 // @route   PATCH /api/receipts/:id/items
 // @access  Protected — cashier, branchManager, admin
-export const addItemsToReceipt = async (req, res) => {
+export const addItemsToReceipt = async (req, res, next) => {
   const { id } = req.params;
   const { items } = req.body;
 
@@ -79,8 +79,7 @@ export const addItemsToReceipt = async (req, res) => {
     logSuccess("receiptMgmt", "Items added to receipt", { receiptId: id, addedCount: addedItems.length, newSubtotal: subtotal });
     res.json(receipt);
   } catch (error) {
-    logError("receiptMgmt", "Error adding items to receipt", error);
-    res.status(500).json({ message: "Failed to add items", error: error.message });
+    next(error);
   }
 };
 
@@ -93,7 +92,7 @@ export const addItemsToReceipt = async (req, res) => {
 //          manager-approved void-request flow instead.
 // @route   POST /api/receipts/:id/cancel
 // @access  Protected — cashier, branchManager, admin
-export const cancelUnpaidReceipt = async (req, res) => {
+export const cancelUnpaidReceipt = async (req, res, next) => {
   const { id } = req.params;
 
   try {
@@ -127,15 +126,14 @@ export const cancelUnpaidReceipt = async (req, res) => {
     logSuccess("receiptMgmt", "Unpaid receipt cancelled and restocked", { receiptId: id, itemCount: receipt.items.length });
     res.json({ message: "Checkout cancelled and stock restored" });
   } catch (error) {
-    logError("receiptMgmt", "Error cancelling unpaid receipt", error);
-    res.status(500).json({ message: "Failed to cancel checkout", error: error.message });
+    next(error);
   }
 };
 
 // @desc    Record that a receipt was (re)printed
 // @route   PATCH /api/receipts/:id/print
 // @access  Protected
-export const markReceiptPrinted = async (req, res) => {
+export const markReceiptPrinted = async (req, res, next) => {
   try {
     logStart("receiptMgmt", "Marking receipt printed", { receiptId: req.params.id });
 
@@ -152,7 +150,6 @@ export const markReceiptPrinted = async (req, res) => {
     logSuccess("receiptMgmt", "Receipt marked printed", { receiptId: req.params.id, printCount: receipt.printCount });
     res.json(receipt);
   } catch (error) {
-    logError("receiptMgmt", "Error marking receipt printed", error);
-    res.status(500).json({ message: "Failed to update print status" });
+    next(error);
   }
 };
