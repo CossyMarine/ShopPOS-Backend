@@ -3,6 +3,7 @@ import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
 import cookieParser from "cookie-parser";
+import morgan from "morgan";
 
 // Routes
 import authRoutes from "./routes/authRoutes.js";
@@ -58,6 +59,10 @@ app.use(express.json());
 
 /* Cookie parser — required to read the httpOnly auth cookie */
 app.use(cookieParser());
+
+/* Request logger — prints method/path/status/response-time to the console
+   for every request, e.g. "GET /api/products 200 15ms" */
+app.use(morgan("dev"));
 
 /* Health check */
 app.get("/", (req, res) => {
