@@ -5,11 +5,12 @@ import AdminSettings from "../models/AdminSettings.js";
 import { generateReceiptForOrder } from "../utils/generateReceipt.js";
 import { deductStockFIFO } from "../utils/productStock.js";
 import { buildOrderVat } from "../utils/vat.js";
+import { notFound } from "../utils/AppError.js";
 
 // @desc    Finalize a checkout: creates the order, deducts stock FIFO, generates receipt
 // @route   POST /api/orders
 // @access  Protected — cashier, branchManager, admin
-export const createOrder = async (req, res) => {
+export const createOrder = async (req, res, next) => {
   const { items, branch, customer, customerName } = req.body;
 
   if (!items || items.length === 0) {
@@ -22,13 +23,19 @@ export const createOrder = async (req, res) => {
     // Deduct stock FIFO for every line — fails fast if any item is short.
     // Mutates each line in place with its real cost-at-sale and vatClass, so
     // `items` (passed straight into Order.create below) carries both through.
+    //
+    // ⚠️ KNOWN ISSUE (not fixed in this pass): if this loop fails partway
+    // (e.g. product not found on line 3 of 5), stock already deducted for
+    // earlier lines is NOT rolled back — the order is never created, but
+    // that inventory is gone. Needs a Mongoose transaction wrapping this
+    // loop + Order.create below. See utils/productStock.js.
     for (const line of items) {
       if (!line.productId) {
         line.vatClass = "standard"; // manual scan fallback — no product to read from
         continue;
       }
       const product = await Product.findById(line.productId);
-      if (!product) return res.status(404).json({ message: `Product not found: ${line.productName}` });
+      if (!product) return next(notFound(`Product: ${line.productName}`));
       const { avgCostPerUnit } = await deductStockFIFO(product, line.quantity);
       line.costPriceAtSale = avgCostPerUnit;
       line.vatClass = product.vatClass || "standard";
@@ -65,7 +72,6 @@ export const createOrder = async (req, res) => {
 
     res.status(201).json({ order, receipt });
   } catch (error) {
-    console.error("Error creating sale:", error.message);
-    res.status(500).json({ message: "Failed to complete sale", error: error.message });
+    next(error);
   }
 };
