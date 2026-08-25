@@ -22,7 +22,7 @@ export const getBranches = async (req, res, next) => {
 // @access  Protected — admin only
 export const createBranch = async (req, res, next) => {
   try {
-    const { name, address, taxRate } = req.body;
+    const { name, address, taxRate, isWarehouse } = req.body;
     logStart("branch", "Creating branch", { name, taxRate });
 
     if (!name) {
@@ -30,7 +30,7 @@ export const createBranch = async (req, res, next) => {
       return res.status(400).json({ message: "Branch name is required" });
     }
 
-    const branch = await Branch.create({ name, address: address || "", taxRate: taxRate ?? 16 });
+    const branch = await Branch.create({ name, address: address || "", taxRate: taxRate ?? 16, isWarehouse: !!isWarehouse, });
 
     logSuccess("branch", "Branch created", { branchId: branch._id, name });
     res.status(201).json(branch);
@@ -44,7 +44,7 @@ export const createBranch = async (req, res, next) => {
 // @access  Protected — admin only
 export const updateBranch = async (req, res, next) => {
   try {
-    const allowed = ["name", "address", "taxRate", "isActive"];
+    const allowed = ["name", "address", "taxRate", "isActive", "isWarehouse"];
     const updates = {};
     allowed.forEach((key) => { if (req.body[key] !== undefined) updates[key] = req.body[key]; });
 
