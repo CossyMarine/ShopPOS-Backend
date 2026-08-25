@@ -22,7 +22,7 @@ export const computeCashback = (amountKes, settings) => {
 // is responsible for saving the receipt. This is the ONE place cashback
 // gets computed, so every payment path (cash, till, STK, wallet) must call
 // this or cashback silently never gets credited.
-export const creditCashback = async (receipt, amount) => {
+export const creditCashback = async (receipt, amount, { session } = {}) => {
   if (!receipt.customer) return;
 
   const settings = await AdminSettings.getSettings();
@@ -30,15 +30,18 @@ export const creditCashback = async (receipt, amount) => {
   if (points <= 0) return;
 
   receipt.rewardPointsEarned = (receipt.rewardPointsEarned || 0) + points;
-  await User.findByIdAndUpdate(receipt.customer, { $inc: { walletPoints: points } });
-  await RewardTransaction.create({
-    user: receipt.customer,
-    type: "earn",
-    points,
-    kesEquivalent: kes,
-    receipt: receipt._id,
-    note: `Cashback on payment of KES ${amount} for bill ${receipt.billId}`,
-  });
+  await User.findByIdAndUpdate(receipt.customer, { $inc: { walletPoints: points } }, { session });
+  await RewardTransaction.create(
+    [{
+      user: receipt.customer,
+      type: "earn",
+      points,
+      kesEquivalent: kes,
+      receipt: receipt._id,
+      note: `Cashback on payment of KES ${amount} for bill ${receipt.billId}`,
+    }],
+    { session }
+  );
 };
 
 // Record a payment entry on a bill, roll up the running total, flip status
@@ -46,7 +49,13 @@ export const creditCashback = async (receipt, amount) => {
 // Does NOT save `receipt` for the caller — callers should have already set
 // any of their own fields (e.g. mpesaStatus) before calling, since this
 // function performs the single `receipt.save()`.
-export const applyPaymentToReceipt = async ({ receipt, amount, method, reference, paidBy, io }) => {
+//
+// Pass { session } to run inside the caller's transaction. IMPORTANT: this
+// function still fires `io.emit` before returning — if the caller is
+// managing a transaction, it should NOT pass `io` here and should instead
+// emit itself only after commitTransaction() succeeds. See
+// orderController.createOrder below for the pattern.
+export const applyPaymentToReceipt = async ({ receipt, amount, method, reference, paidBy, io, session }) => {
   amount = Number(Number(amount).toFixed(2));
 
   receipt.payments.push({ amount, method, reference: reference || null, paidBy: paidBy || null, paidAt: new Date() });
@@ -57,12 +66,12 @@ export const applyPaymentToReceipt = async ({ receipt, amount, method, reference
   receipt.status = totalPaid >= receipt.totalDue ? "paid" : "partial";
   if (receipt.status === "paid") receipt.paidAt = new Date();
 
-  await creditCashback(receipt, amount);
+  await creditCashback(receipt, amount, { session });
 
-  await receipt.save();
+  await receipt.save({ session });
 
   if (receipt.status === "paid") {
-    await Order.findByIdAndUpdate(receipt.order, { status: "completed" });
+    await Order.findByIdAndUpdate(receipt.order, { status: "completed" }, { session });
   }
 
   if (io) {
@@ -75,7 +84,7 @@ export const applyPaymentToReceipt = async ({ receipt, amount, method, reference
 
 // Redeem `pointsToRedeem` from `user`'s reward balance against `receipt`'s
 // balance due. Redeems less than requested if the balance due is smaller.
-export const applyRewardRedemption = async ({ receipt, user, pointsToRedeem, io }) => {
+export const applyRewardRedemption = async ({ receipt, user, pointsToRedeem, io, session }) => {
   const settings = await AdminSettings.getSettings();
   const pointValue = settings.reward.pointValueKes || 1;
 
@@ -106,19 +115,22 @@ export const applyRewardRedemption = async ({ receipt, user, pointsToRedeem, io 
   receipt.status = totalPaid >= receipt.totalDue ? "paid" : "partial";
   if (receipt.status === "paid") receipt.paidAt = new Date();
 
-  await receipt.save();
-  await User.findByIdAndUpdate(user._id, { $inc: { walletPoints: -pointsUsed } });
-  await RewardTransaction.create({
-    user: user._id,
-    type: "redeem",
-    points: -pointsUsed,
-    kesEquivalent: -amountToApply,
-    receipt: receipt._id,
-    note: `Redeemed against bill ${receipt.billId}`,
-  });
+  await receipt.save({ session });
+  await User.findByIdAndUpdate(user._id, { $inc: { walletPoints: -pointsUsed } }, { session });
+  await RewardTransaction.create(
+    [{
+      user: user._id,
+      type: "redeem",
+      points: -pointsUsed,
+      kesEquivalent: -amountToApply,
+      receipt: receipt._id,
+      note: `Redeemed against bill ${receipt.billId}`,
+    }],
+    { session }
+  );
 
   if (receipt.status === "paid") {
-    await Order.findByIdAndUpdate(receipt.order, { status: "completed" });
+    await Order.findByIdAndUpdate(receipt.order, { status: "completed" }, { session });
   }
 
   if (io) {
