@@ -6,6 +6,7 @@ import {
   approveStockAdjustment,
   rejectStockAdjustment,
   getAuditLog,
+  getShrinkageByShift,
 } from "../controllers/stockAdjustmentController.js";
 import { protect, authorize, sameBranch } from "../Middlewares/authMiddleware.js";
 import {
@@ -27,6 +28,7 @@ router.post(
   createStockAdjustment
 );
 router.get("/audit-log", protect, authorize("branchManager", "admin"), getAuditLog);
+router.get("/shrinkage-by-shift", protect, authorize("branchManager", "admin"), getShrinkageByShift);
 router.get("/", protect, authorize("branchManager", "admin"), getStockAdjustments);
 router.patch(
   "/:id/approve",
