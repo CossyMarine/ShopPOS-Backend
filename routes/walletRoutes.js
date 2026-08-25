@@ -12,20 +12,29 @@ import {
   adminPayWithReward,
   getMyBillHistory,
 } from "../controllers/walletController.js";
+import {
+  validateResolveBill,
+  validatePayWithManualTill,
+  validatePayWithStk,
+  validatePayWithReward,
+  validateAdminAddReward,
+  validateAdminPayWithReward,
+} from "../Middlewares/validators/walletValidators.js";
+import { validate } from "../Middlewares/validate.js";
 
 const router = express.Router();
 
 router.get("/me", protect, getMyWallet);
-router.post("/resolve-bill", protect, resolveBill);
-router.post("/pay/manual", protect, payWithManualTill);
-router.post("/pay/stk", protect, payWithStk);
+router.post("/resolve-bill", protect, validateResolveBill, validate, resolveBill);
+router.post("/pay/manual", protect, validatePayWithManualTill, validate, payWithManualTill);
+router.post("/pay/stk", protect, validatePayWithStk, validate, payWithStk);
 router.get("/pay/stk/:receiptId/status", protect, getWalletStkStatus);
-router.post("/pay/reward", protect, payWithReward);
+router.post("/pay/reward", protect, validatePayWithReward, validate, payWithReward);
 
 // "Ask if that customer should be rewarded" — any till-facing staff can award,
 // matching the cashier PaymentModal flow, not just admin.
-router.post("/admin/add-reward", protect, authorize("admin", "branchManager", "cashier"), adminAddReward);
-router.post("/admin/pay-with-reward", protect, authorize("admin", "branchManager", "cashier"), requireOpenShift, adminPayWithReward);
+router.post("/admin/add-reward", protect, authorize("admin", "branchManager", "cashier"), validateAdminAddReward, validate, adminAddReward);
+router.post("/admin/pay-with-reward", protect, authorize("admin", "branchManager", "cashier"), requireOpenShift, validateAdminPayWithReward, validate, adminPayWithReward);
 
 router.get("/history", protect, authorize("customer"), getMyBillHistory);
 
