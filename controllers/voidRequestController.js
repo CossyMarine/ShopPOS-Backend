@@ -203,3 +203,33 @@ export const approveVoidRequest = async (req, res, next) => {
   logSuccess("voidRequest", "Void request approved", { voidRequestId: id, voidType: voidRequest.voidType });
   res.json({ message: "Void request approved", voidRequest, receipt });
 };
+
+// @desc    Reject a void request — receipt stays as-is
+// @route   PATCH /api/void-requests/:id/reject
+// @access  Protected — branchManager, admin
+export const rejectVoidRequest = async (req, res, next) => {
+  const { id } = req.params;
+  const reviewedBy = req.user._id;
+
+  try {
+    logStart("voidRequest", "Rejecting void request", { voidRequestId: id, reviewedBy });
+
+    const voidRequest = await VoidRequest.findByIdAndUpdate(
+      id,
+      { status: "rejected", reviewedBy, reviewedAt: new Date() },
+      { new: true }
+    ).populate("receipt", "branch");
+
+    if (!voidRequest) {
+      return res.status(404).json({ message: "Void request not found" });
+    }
+
+    const io = req.app.get("io");
+    io.to(`branch:${voidRequest.receipt?.branch}`).emit("voidRequest:rejected", voidRequest);
+
+    logSuccess("voidRequest", "Void request rejected", { voidRequestId: id });
+    res.json({ message: "Void request rejected", voidRequest });
+  } catch (error) {
+    next(error);
+  }
+};
