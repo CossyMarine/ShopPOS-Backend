@@ -7,6 +7,7 @@ const branchSchema = new mongoose.Schema(
     address:   { type: String, default: "" },
     taxRate:   { type: Number, default: 16 }, // region-specific VAT %, editable by Super Admin
     isActive:  { type: Boolean, default: true },
+    isWarehouse: { type: Boolean, default: false },
     manager:   { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   },
   { timestamps: true }
