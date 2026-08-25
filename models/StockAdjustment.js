@@ -5,6 +5,10 @@ const stockAdjustmentSchema = new mongoose.Schema(
   {
     product: { type: mongoose.Schema.Types.ObjectId, ref: "Product", required: true },
     branch:  { type: mongoose.Schema.Types.ObjectId, ref: "Branch", required: true },
+    // Whichever shift was open for requestedBy at the moment this was filed —
+    // null if no shift was open (e.g. a branchManager filing outside a till
+    // shift). This is what lets shrinkage reporting group losses by shift.
+    shift:   { type: mongoose.Schema.Types.ObjectId, ref: "Shift", default: null },
 
     quantity: { type: Number, required: true, min: 0.001 }, // in selling units (each)
     reason: {
@@ -39,5 +43,6 @@ const stockAdjustmentSchema = new mongoose.Schema(
 stockAdjustmentSchema.index({ branch: 1, status: 1, createdAt: -1 });
 stockAdjustmentSchema.index({ product: 1, createdAt: -1 });
 stockAdjustmentSchema.index({ requestedBy: 1, createdAt: -1 });
+stockAdjustmentSchema.index({ shift: 1, createdAt: -1 });
 
 export default mongoose.model("StockAdjustment", stockAdjustmentSchema);
