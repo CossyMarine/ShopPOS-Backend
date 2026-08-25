@@ -138,92 +138,68 @@ export const approveVoidRequest = async (req, res, next) => {
   const { id } = req.params;
   const reviewedBy = req.user._id;
 
+  const session = await mongoose.startSession();
+  let voidRequest, receipt;
+
   try {
     logStart("voidRequest", "Approving void request", { voidRequestId: id, reviewedBy });
 
-    const voidRequest = await VoidRequest.findByIdAndUpdate(
-      id,
-      { status: "approved", reviewedBy, reviewedAt: new Date() },
-      { new: true }
-    );
-    if (!voidRequest) {
-      return res.status(404).json({ message: "Void request not found" });
-    }
-
-    const receipt = await Receipt.findById(voidRequest.receipt);
-    if (!receipt) {
-      return res.status(404).json({ message: "Receipt no longer exists" });
-    }
-
-    const io = req.app.get("io");
-
-    if (voidRequest.voidType === "partial" && voidRequest.voidItems.length < receipt.items.length) {
-      const voidedIndices = new Set(voidRequest.voidItems.map((v) => v.index));
-
-      await restockItems(voidRequest.voidItems, receipt.billId, reviewedBy);
-
-      const remainingItems = receipt.items.filter((_, idx) => !voidedIndices.has(idx));
-      const voidedTotal = voidRequest.voidItems.reduce((sum, v) => sum + v.lineTotal, 0);
-      const newSubtotal = Number(remainingItems.reduce((sum, i) => sum + i.lineTotal, 0).toFixed(2));
-
-      receipt.items = remainingItems;
-      receipt.subtotal = newSubtotal;
-
-      if (remainingItems.length === 0) {
-        receipt.status = "voided";
-      } else if (receipt.amountPaid != null) {
-        const newAmountPaid = Math.max(0, Number((receipt.amountPaid - voidedTotal).toFixed(2)));
-        receipt.amountPaid = newAmountPaid;
-        receipt.status = newAmountPaid >= newSubtotal ? "paid" : newAmountPaid > 0 ? "partial" : "unpaid";
+    await session.withTransaction(async () => {
+      voidRequest = await VoidRequest.findById(id).session(session);
+      if (!voidRequest) throw notFound("Void request");
+      if (voidRequest.status !== "pending") {
+        // Not pending — nothing to roll back yet, so it's safe to throw a
+        // plain validation error rather than an aborted transaction.
+        throw badRequest(`Void request is already ${voidRequest.status}`);
       }
 
-      await receipt.save();
-      await Order.findByIdAndUpdate(receipt.order, { items: remainingItems, subtotal: newSubtotal });
+      receipt = await Receipt.findById(voidRequest.receipt).session(session);
+      if (!receipt) throw notFound("Receipt");
 
-      io.to(`branch:${receipt.branch}`).emit("voidRequest:approved", voidRequest);
-      io.to(`branch:${receipt.branch}`).emit("receipt:updated", receipt);
-    } else {
-      receipt.status = "voided";
-      await receipt.save();
-      await restockItems(receipt.items, receipt.billId, reviewedBy);
+      voidRequest.status = "approved";
+      voidRequest.reviewedBy = reviewedBy;
+      voidRequest.reviewedAt = new Date();
+      await voidRequest.save({ session });
 
-      io.to(`branch:${receipt.branch}`).emit("voidRequest:approved", voidRequest);
-      io.to(`branch:${receipt.branch}`).emit("receipt:updated", receipt);
-    }
+      if (voidRequest.voidType === "partial" && voidRequest.voidItems.length < receipt.items.length) {
+        const voidedIndices = new Set(voidRequest.voidItems.map((v) => v.index));
 
-    logSuccess("voidRequest", "Void request approved", { voidRequestId: id, voidType: voidRequest.voidType });
-    res.json({ message: "Void request approved", voidRequest, receipt });
+        await restockItems(voidRequest.voidItems, receipt.billId, reviewedBy, { session });
+
+        const remainingItems = receipt.items.filter((_, idx) => !voidedIndices.has(idx));
+        const voidedTotal = voidRequest.voidItems.reduce((sum, v) => sum + v.lineTotal, 0);
+        const newSubtotal = Number(remainingItems.reduce((sum, i) => sum + i.lineTotal, 0).toFixed(2));
+
+        receipt.items = remainingItems;
+        receipt.subtotal = newSubtotal;
+
+        if (remainingItems.length === 0) {
+          receipt.status = "voided";
+        } else if (receipt.amountPaid != null) {
+          const newAmountPaid = Math.max(0, Number((receipt.amountPaid - voidedTotal).toFixed(2)));
+          receipt.amountPaid = newAmountPaid;
+          receipt.status = newAmountPaid >= newSubtotal ? "paid" : newAmountPaid > 0 ? "partial" : "unpaid";
+        }
+
+        await receipt.save({ session });
+        await Order.findByIdAndUpdate(receipt.order, { items: remainingItems, subtotal: newSubtotal }, { session });
+      } else {
+        receipt.status = "voided";
+        await receipt.save({ session });
+        await restockItems(receipt.items, receipt.billId, reviewedBy, { session });
+      }
+    });
   } catch (error) {
-    next(error);
+    await session.endSession();
+    return next(error);
   }
-};
+  await session.endSession();
 
-// @desc    Reject a void request — receipt stays as-is
-// @route   PATCH /api/void-requests/:id/reject
-// @access  Protected — branchManager, admin
-export const rejectVoidRequest = async (req, res, next) => {
-  const { id } = req.params;
-  const reviewedBy = req.user._id;
+  // Emit only after commit — see reasoning in createOrder above.
+  const io = req.app.get("io");
+  io.to(`branch:${receipt.branch}`).emit("voidRequest:approved", voidRequest);
+  io.to(`branch:${receipt.branch}`).emit("receipt:updated", receipt);
 
-  try {
-    logStart("voidRequest", "Rejecting void request", { voidRequestId: id, reviewedBy });
-
-    const voidRequest = await VoidRequest.findByIdAndUpdate(
-      id,
-      { status: "rejected", reviewedBy, reviewedAt: new Date() },
-      { new: true }
-    ).populate("receipt", "branch");
-
-    if (!voidRequest) {
-      return res.status(404).json({ message: "Void request not found" });
-    }
-
-    const io = req.app.get("io");
-    io.to(`branch:${voidRequest.receipt?.branch}`).emit("voidRequest:rejected", voidRequest);
-
-    logSuccess("voidRequest", "Void request rejected", { voidRequestId: id });
-    res.json({ message: "Void request rejected", voidRequest });
-  } catch (error) {
-    next(error);
-  }
+  logSuccess("voidRequest", "Void request approved", { voidRequestId: id, voidType: voidRequest.voidType });
+  res.json({ message: "Void request approved", voidRequest, receipt });
 };
