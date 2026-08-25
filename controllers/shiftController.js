@@ -5,13 +5,13 @@ import Receipt from "../models/Receipt.js";
 import VoidRequest from "../models/VoidRequest.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
-import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
+import { logStart, logSuccess } from "../utils/requestLogger.js";
 
 // @desc    Open a shift for the logged-in user. Each cashier has their own
 //          shift — the uniqueness check is scoped per-user, not branch-wide.
 // @route   POST /api/shifts/open
 // @access  Protected
-export const openShift = async (req, res) => {
+export const openShift = async (req, res, next) => {
   const { openingFloat } = req.body;
   const openedBy = req.user._id;
 
@@ -39,23 +39,21 @@ export const openShift = async (req, res) => {
     logSuccess("shift", "Shift opened", { shiftId: shift._id, openedBy });
     res.status(201).json(shift);
   } catch (error) {
-    logError("shift", "Error opening shift", error);
-    res.status(500).json({ message: "Failed to open shift", error: error.message });
+    next(error);
   }
 };
 
 // @desc    Get the logged-in user's own open shift, or null
 // @route   GET /api/shifts/current
 // @access  Protected
-export const getCurrentShift = async (req, res) => {
+export const getCurrentShift = async (req, res, next) => {
   try {
     logStart("shift", "Fetching current shift", { user: req.user._id });
     const shift = await Shift.findOne({ openedBy: req.user._id, status: "open" }).populate("openedBy", "fullName");
     logSuccess("shift", "Current shift fetched", { found: Boolean(shift), shiftId: shift?._id });
     res.json(shift);
   } catch (error) {
-    logError("shift", "Error fetching current shift", error);
-    res.status(500).json({ message: "Failed to fetch current shift", error: error.message });
+    next(error);
   }
 };
 
@@ -63,7 +61,7 @@ export const getCurrentShift = async (req, res) => {
 //          or a shared cashier-station login acting on a named cashier's shift)
 // @route   POST /api/shifts/:id/petty-cash
 // @access  Protected
-export const addPettyCash = async (req, res) => {
+export const addPettyCash = async (req, res, next) => {
   const { id } = req.params;
   const { amount, reason } = req.body;
   const loggedBy = req.user._id;
@@ -100,8 +98,7 @@ export const addPettyCash = async (req, res) => {
     logSuccess("shift", "Petty cash entry added", { shiftId: id, entryId: entry._id, amount });
     res.status(201).json(entry);
   } catch (error) {
-    logError("shift", "Error adding petty cash entry", error);
-    res.status(500).json({ message: "Failed to add petty cash entry", error: error.message });
+    next(error);
   }
 };
 
@@ -177,7 +174,7 @@ const computeShiftSummary = async (shiftId) => {
 //          or a shared cashier-station login)
 // @route   GET /api/shifts/:id/summary
 // @access  Protected
-export const getShiftSummary = async (req, res) => {
+export const getShiftSummary = async (req, res, next) => {
   const { id } = req.params;
   try {
     logStart("shift", "Computing shift summary", { shiftId: id });
@@ -195,8 +192,7 @@ export const getShiftSummary = async (req, res) => {
     logSuccess("shift", "Shift summary computed", { shiftId: id, grandTotal: summary.grandTotal });
     res.json(summary);
   } catch (error) {
-    logError("shift", "Error computing shift summary", error);
-    res.status(500).json({ message: "Failed to compute shift summary", error: error.message });
+    next(error);
   }
 };
 
@@ -204,7 +200,7 @@ export const getShiftSummary = async (req, res) => {
 //          login closing a named cashier's shift)
 // @route   POST /api/shifts/:id/close
 // @access  Protected
-export const closeShift = async (req, res) => {
+export const closeShift = async (req, res, next) => {
   const { id } = req.params;
   const { closingCashCount, notes } = req.body;
   const closedBy = req.user._id;
@@ -245,15 +241,14 @@ export const closeShift = async (req, res) => {
     logSuccess("shift", "Shift closed", { shiftId: id, variance: summary.variance });
     res.json(summary);
   } catch (error) {
-    logError("shift", "Error closing shift", error);
-    res.status(500).json({ message: "Failed to close shift", error: error.message });
+    next(error);
   }
 };
 
 // @desc    Admin/branchManager — shift history for one cashier, filterable by date
 // @route   GET /api/shifts/history/:userId?from=&to=
 // @access  Protected — admin, branchManager
-export const getShiftHistory = async (req, res) => {
+export const getShiftHistory = async (req, res, next) => {
   const { userId } = req.params;
   const { from, to } = req.query;
   try {
@@ -270,8 +265,7 @@ export const getShiftHistory = async (req, res) => {
     logSuccess("shift", "Shift history loaded", { userId, count: shifts.length });
     res.json(shifts);
   } catch (error) {
-    logError("shift", "Error loading shift history", error);
-    res.status(500).json({ message: "Failed to load shift history", error: error.message });
+    next(error);
   }
 };
 
@@ -280,7 +274,7 @@ export const getShiftHistory = async (req, res) => {
 //          individual cashier but the staff picks who they are from a dropdown.
 // @route   POST /api/shifts/cashier/:cashierId/open
 // @access  Protected — cashier (station), branchManager, or admin
-export const openShiftForCashier = async (req, res) => {
+export const openShiftForCashier = async (req, res, next) => {
   const { cashierId } = req.params;
   const { openingFloat } = req.body;
 
@@ -315,8 +309,7 @@ export const openShiftForCashier = async (req, res) => {
     logSuccess("shift", "Cashier shift opened", { shiftId: shift._id, cashierId });
     res.status(201).json(shift);
   } catch (error) {
-    logError("shift", "Error opening cashier shift", error);
-    res.status(500).json({ message: "Failed to open shift", error: error.message });
+    next(error);
   }
 };
 
@@ -325,7 +318,7 @@ export const openShiftForCashier = async (req, res) => {
 //          /api/shifts/current (which reads req.user._id) can't answer this.
 // @route   GET /api/shifts/cashier/:cashierId/status
 // @access  Protected — cashier (station), branchManager, or admin
-export const getShiftStatusForCashier = async (req, res) => {
+export const getShiftStatusForCashier = async (req, res, next) => {
   const { cashierId } = req.params;
   try {
     logStart("shift", "Fetching cashier shift status", { cashierId });
@@ -333,7 +326,6 @@ export const getShiftStatusForCashier = async (req, res) => {
     logSuccess("shift", "Cashier shift status fetched", { cashierId, found: Boolean(shift) });
     res.json(shift);
   } catch (error) {
-    logError("shift", "Error fetching cashier shift status", error);
-    res.status(500).json({ message: "Failed to fetch shift status", error: error.message });
+    next(error);
   }
 };
