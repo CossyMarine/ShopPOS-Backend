@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 import Receipt from "../models/Receipt.js";
 import Product from "../models/Product.js";
 import { getKenyanDayBounds, getKenyanMonthBounds } from "../utils/dateHelpers.js";
-import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
+import { logStart, logSuccess } from "../utils/requestLogger.js";
 
 // "1st", "2nd", "3rd", "12th", "21st" ...
 const ordinal = (n) => {
@@ -17,7 +17,7 @@ const ordinal = (n) => {
 //          Display idle-loop stat and the Cashier dashboard header.
 // @route   GET /api/revenue/today?branch=
 // @access  Public
-export const getTodayRevenue = async (req, res) => {
+export const getTodayRevenue = async (req, res, next) => {
   try {
     logStart("revenue", "Loading today's revenue", { branch: req.query.branch || "all" });
 
@@ -49,8 +49,7 @@ export const getTodayRevenue = async (req, res) => {
       paidReceiptsCount: data.paidReceiptsCount,
     });
   } catch (error) {
-    logError("revenue", "Error fetching today's revenue", error);
-    res.status(500).json({ message: "Failed to fetch revenue data", error: error.message });
+    next(error);
   }
 };
 
@@ -59,7 +58,7 @@ export const getTodayRevenue = async (req, res) => {
 //          branches" combined figure, or pass it to drill into one branch.
 // @route   GET /api/revenue/summary?branch=
 // @access  Protected — admin, branchManager (auto-scoped via sameBranch)
-export const getRevenueSummary = async (req, res) => {
+export const getRevenueSummary = async (req, res, next) => {
   try {
     logStart("revenue", "Loading revenue summary", { branch: req.query.branch || "all" });
 
@@ -86,8 +85,7 @@ export const getRevenueSummary = async (req, res) => {
       totalReceipts,
     });
   } catch (error) {
-    logError("revenue", "Error fetching revenue summary", error);
-    res.status(500).json({ message: "Failed to fetch revenue summary", error: error.message });
+    next(error);
   }
 };
 
@@ -109,7 +107,7 @@ export const getRevenueSummary = async (req, res) => {
 //          overstate profit.
 // @route   GET /api/revenue/dashboard-stats?branch=
 // @access  Protected — admin, branchManager
-export const getDashboardStats = async (req, res) => {
+export const getDashboardStats = async (req, res, next) => {
   try {
     logStart("revenue", "Loading dashboard stats", { branch: req.query.branch || "all" });
 
@@ -329,7 +327,6 @@ export const getDashboardStats = async (req, res) => {
       voidedToday: { amount: voided.amount, count: voided.count },
     });
   } catch (error) {
-    logError("revenue", "Error fetching dashboard stats", error);
-    res.status(500).json({ message: "Failed to fetch dashboard stats", error: error.message });
+    next(error);
   }
 };
