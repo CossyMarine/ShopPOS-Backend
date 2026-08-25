@@ -35,6 +35,7 @@ import payrollSettingsRoutes from "./routes/payrollSettingsRoutes.js";
 import analyticsRoutes from "./routes/analyticsRoutes.js";
 import stockAdjustmentRoutes from "./routes/stockAdjustmentRoutes.js";
 import stockCountRoutes from "./routes/stockCountRoutes.js";
+import stockTransferRoutes from "./routes/stockTransferRoutes.js";
 
 dotenv.config();
 
@@ -110,6 +111,7 @@ app.use("/api/payroll-settings", payrollSettingsRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/stock-adjustments", stockAdjustmentRoutes);
 app.use("/api/stock-counts", stockCountRoutes);
+app.use("/api/stock-transfers", stockTransferRoutes);
 
 /* =================================================
    404 + ERROR HANDLING
