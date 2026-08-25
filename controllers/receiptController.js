@@ -10,6 +10,7 @@ import {
   findCustomerByIdentifier,
 } from "../utils/walletPayments.js";
 import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
+import { badRequest, AppError } from "../utils/AppError.js";
 
 // ---- split out into controllers/receipt/*, re-exported so routes/receiptRoutes.js
 //      doesn't need to change its import path ----
@@ -33,7 +34,7 @@ export { addItemsToReceipt, markReceiptPrinted , cancelUnpaidReceipt} from "./re
 // @desc    Pay a receipt with cash. Change is never allowed to be negative.
 // @route   PATCH /api/receipts/:id/pay
 // @access  Protected — cashier, branchManager, admin
-export const payReceipt = async (req, res) => {
+export const payReceipt = async (req, res, next) => {
   const { id } = req.params;
   const { amountPaid } = req.body;
 
@@ -89,8 +90,7 @@ export const payReceipt = async (req, res) => {
     logSuccess("receipt", "Cash payment processed", { receiptId: id, balanceDue, changeGiven });
     res.json({ message: "Payment successful", receipt });
   } catch (error) {
-    logError("receipt", "Error processing payment", error);
-    res.status(500).json({ message: "Failed to process payment", error: error.message });
+    next(error);
   }
 };
 
@@ -192,7 +192,7 @@ const finalizeMpesaFailure = async ({ receipt, resultDesc, io }) => {
 //          a partial amount for a split "both" payment (prompt covers the rest).
 // @route   POST /api/receipts/:id/mpesa/initiate
 // @access  Protected — cashier, branchManager, admin
-export const initiateMpesaPayment = async (req, res) => {
+export const initiateMpesaPayment = async (req, res, next) => {
   const { id } = req.params;
   let { phone, cashAmount } = req.body;
 
@@ -266,13 +266,12 @@ export const initiateMpesaPayment = async (req, res) => {
       cashAmount,
     });
   } catch (error) {
-    logError("receipt", "Error initiating M-Pesa payment", error);
-    res.status(500).json({
-      message:
-        error.response?.data?.errorMessage ||
-        error.message ||
-        "Failed to initiate M-Pesa payment",
-    });
+    // Preserve the M-Pesa-specific rejection reason, same reasoning as
+    // walletController.payWithStk.
+    next(new AppError(
+      error.response?.data?.errorMessage || error.message || "Failed to initiate M-Pesa payment",
+      500
+    ));
   }
 };
 
@@ -280,6 +279,11 @@ export const initiateMpesaPayment = async (req, res) => {
 // @route   POST /api/receipts/mpesa/callback
 // @access  Public (Safaricom webhook)
 export const mpesaCallback = async (req, res) => {
+  // NOTE: intentionally NOT converted to next(error) — this is a Safaricom
+  // webhook and must always return 200, regardless of outcome. Returning a
+  // non-200 (which the centralized errorHandler would do) makes Daraja
+  // retry the callback, risking a double-apply of the payment. Keep this
+  // route's own try/catch and always respond 200.
   try {
     const callback = req.body?.Body?.stkCallback;
     if (!callback) {
@@ -326,7 +330,7 @@ export const mpesaCallback = async (req, res) => {
 //          still completes even if the callback URL can't be reached.
 // @route   GET /api/receipts/:id/mpesa/status
 // @access  Protected — cashier, branchManager, admin
-export const getMpesaStatus = async (req, res) => {
+export const getMpesaStatus = async (req, res, next) => {
   try {
     logStart("receipt", "Checking M-Pesa status", { receiptId: req.params.id });
 
@@ -372,15 +376,14 @@ export const getMpesaStatus = async (req, res) => {
     logSuccess("receipt", "M-Pesa status: still pending", { receiptId: req.params.id });
     res.json({ status: "pending", receipt });
   } catch (error) {
-    logError("receipt", "Error checking M-Pesa status", error);
-    res.status(500).json({ message: "Failed to check payment status" });
+    next(error);
   }
 };
 
 // @desc    Cancel a pending STK push so the cashier can retry or switch method
 // @route   POST /api/receipts/:id/mpesa/cancel
 // @access  Protected — cashier, branchManager, admin
-export const cancelMpesaPayment = async (req, res) => {
+export const cancelMpesaPayment = async (req, res, next) => {
   try {
     logStart("receipt", "Cancelling M-Pesa payment", { receiptId: req.params.id });
 
@@ -401,8 +404,7 @@ export const cancelMpesaPayment = async (req, res) => {
     logSuccess("receipt", "M-Pesa payment cancelled", { receiptId: req.params.id });
     res.json({ message: "Cancelled", receipt });
   } catch (error) {
-    logError("receipt", "Error cancelling M-Pesa payment", error);
-    res.status(500).json({ message: "Failed to cancel" });
+    next(error);
   }
 };
 
@@ -414,7 +416,7 @@ export const cancelMpesaPayment = async (req, res) => {
 //          customer-facing wallet self-pay flow).
 // @route   PATCH /api/receipts/:id/pay/cash-till
 // @access  Protected — cashier, branchManager, admin
-export const payCashAndTill = async (req, res) => {
+export const payCashAndTill = async (req, res, next) => {
   const { id } = req.params;
   let { cashAmount } = req.body;
 
@@ -472,8 +474,7 @@ export const payCashAndTill = async (req, res) => {
     logSuccess("receipt", "Cash+till payment processed", { receiptId: id, cashAmount, tillAmount });
     res.json({ message: "Payment successful", receipt });
   } catch (error) {
-    logError("receipt", "Error processing cash+till payment", error);
-    res.status(500).json({ message: "Failed to process payment", error: error.message });
+    next(error);
   }
 };
 
@@ -488,7 +489,7 @@ export const payCashAndTill = async (req, res) => {
 //          call POST /:id/mpesa/initiate next for that remainder.
 // @route   PATCH /api/receipts/:id/pay/combo
 // @access  Protected — cashier, branchManager, admin (open shift required)
-export const payCombo = async (req, res) => {
+export const payCombo = async (req, res, next) => {
   const { id } = req.params;
   let { cashAmount, tillAmount, rewardIdentifier, rewardAmount } = req.body;
 
@@ -592,7 +593,8 @@ export const payCombo = async (req, res) => {
       balanceRemaining,
     });
   } catch (error) {
-    logError("receipt", "Error processing combo payment", error);
-    res.status(400).json({ message: error.message || "Failed to process payment" });
+    // applyRewardRedemption throws plain Errors for validation-style
+    // failures — this route always treated those as 400s, not 500s.
+    next(badRequest(error.message || "Failed to process payment"));
   }
 };
