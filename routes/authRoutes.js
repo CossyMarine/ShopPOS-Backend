@@ -32,15 +32,32 @@ const resetLimiter = rateLimit({
   message: { message: "Too many requests. Please try again later." },
 });
 
-router.post("/login", login);
+// Looser than resetLimiter — login is a normal, frequent action (staff
+// clocking in, retrying a mistyped password) but still needs a ceiling
+// against credential-stuffing/brute-force.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { message: "Too many login attempts. Please try again later." },
+});
+
+// Registration is rarer than login — a tighter cap discourages scripted
+// account creation without getting in the way of real signups.
+const registerLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { message: "Too many registration attempts. Please try again later." },
+});
+
+router.post("/login", loginLimiter, login);
 router.post("/logout", logout);
 router.get("/me", protect, getMe);
 router.patch("/me", protect, updateMe);
 router.patch("/selected-branch", protect, authorize("admin"), updateSelectedBranch);
 router.put("/change-password", protect, changePassword);
 router.get("/check-availability", checkAvailability);
-router.post("/register-customer", registerCustomer);
-router.post("/register", protect, authorize("admin"), createUser);
+router.post("/register-customer", registerLimiter, registerCustomer);
+router.post("/register", protect, authorize("admin"), registerLimiter, createUser);
 router.get("/cashiers", protect, getCashiers);
 
 // Forgot password (numeric code flow — email via Resend, phone via OpenSMS SMS/WhatsApp)
