@@ -2,17 +2,16 @@
 import WageProfile from "../models/WageProfile.js";
 import User from "../models/User.js";
 import { getAvailableDeductionsForUser } from "./payrollController.js";
-import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
+import { logStart, logSuccess } from "../utils/requestLogger.js";
 
-export const getWageProfile = async (req, res) => {
+export const getWageProfile = async (req, res, next) => {
   try {
     logStart("wage", "Loading wage profile", { userId: req.params.userId });
     const profile = await WageProfile.findOne({ user: req.params.userId });
     logSuccess("wage", "Wage profile loaded", { userId: req.params.userId, found: Boolean(profile) });
     res.json(profile);
   } catch (error) {
-    logError("wage", "Error loading wage profile", error);
-    res.status(500).json({ message: "Failed to load wage profile", error: error.message });
+    next(error);
   }
 };
 
@@ -20,7 +19,7 @@ export const getWageProfile = async (req, res) => {
 // deductions toggle: the built-in statutory levy + every custom Deduction
 // that applies to this specific user. Frontend defaults to all of them
 // selected when selectedDeductions is empty on the profile.
-export const getDeductionOptions = async (req, res) => {
+export const getDeductionOptions = async (req, res, next) => {
   try {
     logStart("wage", "Loading deduction options", { userId: req.params.userId });
 
@@ -38,12 +37,11 @@ export const getDeductionOptions = async (req, res) => {
     logSuccess("wage", "Deduction options loaded", { userId: req.params.userId, count: options.length });
     res.json(options);
   } catch (error) {
-    logError("wage", "Error loading deduction options", error);
-    res.status(500).json({ message: "Failed to load deduction options", error: error.message });
+    next(error);
   }
 };
 
-export const upsertWageProfile = async (req, res) => {
+export const upsertWageProfile = async (req, res, next) => {
   const { userId } = req.params;
   const {
     wageType, hourlyRate, overtimeMultiplier,
@@ -114,12 +112,11 @@ export const upsertWageProfile = async (req, res) => {
     logSuccess("wage", "Wage profile saved", { userId, wageType, profileId: profile._id });
     res.json(profile);
   } catch (error) {
-    logError("wage", "Error saving wage profile", error);
-    res.status(500).json({ message: "Failed to save wage profile", error: error.message });
+    next(error);
   }
 };
 
-export const listWageProfiles = async (req, res) => {
+export const listWageProfiles = async (req, res, next) => {
   try {
     logStart("wage", "Loading wage profiles", { branch: req.query.branch || "own" });
 
@@ -132,7 +129,6 @@ export const listWageProfiles = async (req, res) => {
     logSuccess("wage", "Wage profiles loaded", { count: profiles.length });
     res.json(profiles);
   } catch (error) {
-    logError("wage", "Error loading wage profiles", error);
-    res.status(500).json({ message: "Failed to load wage profiles", error: error.message });
+    next(error);
   }
 };
