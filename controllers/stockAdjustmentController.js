@@ -3,7 +3,7 @@ import StockAdjustment from "../models/StockAdjustment.js";
 import AuditLog from "../models/AuditLog.js";
 import Product from "../models/Product.js";
 import { deductStockFIFO } from "../utils/productStock.js";
-import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
+import { logStart, logSuccess } from "../utils/requestLogger.js";
 
 const PHOTO_REQUIRED_REASONS = ["damaged", "stolen"];
 
@@ -13,7 +13,7 @@ const PHOTO_REQUIRED_REASONS = ["damaged", "stolen"];
 // @route   POST /api/stock-adjustments
 // @body    { productId, quantity, reason, note?, photoUrl?, photoPublicId? }
 // @access  Protected — cashier, storekeeper, branchManager, admin
-export const createStockAdjustment = async (req, res) => {
+export const createStockAdjustment = async (req, res, next) => {
   try {
     const { productId, quantity, reason, note, photoUrl, photoPublicId } = req.body;
     logStart("stockAdjustment", "Requesting adjustment", { productId, quantity, reason, by: req.user._id });
@@ -73,15 +73,14 @@ export const createStockAdjustment = async (req, res) => {
     logSuccess("stockAdjustment", "Adjustment requested", { adjustmentId: adjustment._id });
     res.status(201).json({ message: "Adjustment submitted for approval", adjustment });
   } catch (error) {
-    logError("stockAdjustment", "Error creating adjustment", error);
-    res.status(500).json({ message: "Failed to submit adjustment" });
+    next(error);
   }
 };
 
 // @desc    List pending adjustments (omit ?branch= as Super Admin to see all)
 // @route   GET /api/stock-adjustments?branch=&status=
 // @access  Protected — branchManager, admin
-export const getStockAdjustments = async (req, res) => {
+export const getStockAdjustments = async (req, res, next) => {
   try {
     const filter = {};
     if (req.query.branch) filter.branch = req.query.branch;
@@ -95,8 +94,7 @@ export const getStockAdjustments = async (req, res) => {
 
     res.json(adjustments);
   } catch (error) {
-    logError("stockAdjustment", "Error fetching adjustments", error);
-    res.status(500).json({ message: "Failed to fetch adjustments" });
+    next(error);
   }
 };
 
@@ -105,7 +103,7 @@ export const getStockAdjustments = async (req, res) => {
 //          real weighted cost of what was lost, not a guess.
 // @route   PATCH /api/stock-adjustments/:id/approve
 // @access  Protected — branchManager, admin
-export const approveStockAdjustment = async (req, res) => {
+export const approveStockAdjustment = async (req, res, next) => {
   try {
     const adjustment = await StockAdjustment.findById(req.params.id);
     if (!adjustment) return res.status(404).json({ message: "Adjustment not found" });
@@ -152,8 +150,7 @@ export const approveStockAdjustment = async (req, res) => {
 
     res.json({ message: "Adjustment approved, stock updated", adjustment, product });
   } catch (error) {
-    logError("stockAdjustment", "Error approving adjustment", error);
-    res.status(500).json({ message: "Failed to approve adjustment" });
+    next(error);
   }
 };
 
@@ -161,7 +158,7 @@ export const approveStockAdjustment = async (req, res) => {
 // @route   PATCH /api/stock-adjustments/:id/reject
 // @body    { rejectionNote? }
 // @access  Protected — branchManager, admin
-export const rejectStockAdjustment = async (req, res) => {
+export const rejectStockAdjustment = async (req, res, next) => {
   try {
     const adjustment = await StockAdjustment.findById(req.params.id);
     if (!adjustment) return res.status(404).json({ message: "Adjustment not found" });
@@ -189,8 +186,7 @@ export const rejectStockAdjustment = async (req, res) => {
 
     res.json({ message: "Adjustment rejected", adjustment });
   } catch (error) {
-    logError("stockAdjustment", "Error rejecting adjustment", error);
-    res.status(500).json({ message: "Failed to reject adjustment" });
+    next(error);
   }
 };
 
@@ -199,7 +195,7 @@ export const rejectStockAdjustment = async (req, res) => {
 //          same product, repeated "shrinkage" claims).
 // @route   GET /api/stock-adjustments/audit-log?branch=&entityType=&performedBy=
 // @access  Protected — admin (branchManager can see their own branch only)
-export const getAuditLog = async (req, res) => {
+export const getAuditLog = async (req, res, next) => {
   try {
     const filter = {};
     if (req.user.isAdmin) {
@@ -217,7 +213,6 @@ export const getAuditLog = async (req, res) => {
 
     res.json(logs);
   } catch (error) {
-    logError("stockAdjustment", "Error fetching audit log", error);
-    res.status(500).json({ message: "Failed to fetch audit log" });
+    next(error);
   }
 };
