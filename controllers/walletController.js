@@ -5,6 +5,8 @@ import Product from "../models/Product.js";
 import AdminSettings from "../models/AdminSettings.js";
 import { stkPush } from "../utils/mpesa.js";
 import { applyPaymentToReceipt, applyRewardRedemption, findCustomerByIdentifier } from "../utils/walletPayments.js";
+import { logStart, logSuccess } from "../utils/requestLogger.js";
+import { badRequest, AppError } from "../utils/AppError.js";
 
 const attachProductImages = async (items) => {
   const names = items.map((i) => i.productName);
@@ -24,8 +26,10 @@ const attachProductImages = async (items) => {
 // @desc    Logged-in customer's wallet — points balance + unpaid/partial bills
 // @route   GET /api/wallet/me
 // @access  Protected
-export const getMyWallet = async (req, res) => {
+export const getMyWallet = async (req, res, next) => {
   try {
+    logStart("wallet", "Loading wallet", { user: req.user._id });
+
     const settings = await AdminSettings.getSettings();
     const bills = await Receipt.find({
       customer: req.user._id,
@@ -34,6 +38,7 @@ export const getMyWallet = async (req, res) => {
 
     const points = req.user.walletPoints || 0;
 
+    logSuccess("wallet", "Wallet loaded", { user: req.user._id, points, billCount: bills.length });
     res.json({
       points,
       pointValueKes: settings.reward.pointValueKes,
@@ -44,8 +49,7 @@ export const getMyWallet = async (req, res) => {
       bills,
     });
   } catch (error) {
-    console.error("Error fetching wallet:", error.message);
-    res.status(500).json({ message: "Failed to fetch wallet" });
+    next(error);
   }
 };
 
@@ -63,7 +67,7 @@ const normalizeBillId = (raw) => {
 //          else's bill: send billId + their registered email or phone.
 // @route   POST /api/wallet/resolve-bill
 // @access  Protected
-export const resolveBill = async (req, res) => {
+export const resolveBill = async (req, res, next) => {
   const { billId: rawBillId, identifier } = req.body;
   if (!rawBillId || !rawBillId.trim()) {
     return res.status(400).json({ message: "Bill ID is required" });
@@ -75,6 +79,8 @@ export const resolveBill = async (req, res) => {
   }
 
   try {
+    logStart("wallet", "Resolving bill", { billId, hasIdentifier: Boolean(identifier) });
+
     let targetUserId = req.user._id;
     let customerName = req.user.fullName;
 
@@ -99,6 +105,7 @@ export const resolveBill = async (req, res) => {
     const items = await attachProductImages(receipt.items);
     const balanceDue = Number((receipt.subtotal - (receipt.amountPaid || 0)).toFixed(2));
 
+    logSuccess("wallet", "Bill resolved", { billId, receiptId: receipt._id });
     res.json({
       receiptId: receipt._id,
       billId: receipt.billId,
@@ -112,8 +119,7 @@ export const resolveBill = async (req, res) => {
       hasPendingManualPayment: (receipt.pendingManualPayments?.length || 0) > 0,
     });
   } catch (error) {
-    console.error("Error resolving bill:", error.message);
-    res.status(500).json({ message: "Failed to look up bill" });
+    next(error);
   }
 };
 
@@ -128,7 +134,7 @@ export const resolveBill = async (req, res) => {
 //            unpaid/partial until staff confirm it on the Payments page.
 // @route   POST /api/wallet/pay/manual
 // @access  Protected
-export const payWithManualTill = async (req, res) => {
+export const payWithManualTill = async (req, res, next) => {
   const { receiptId, amount, reference } = req.body;
 
   if (!receiptId || !amount) return res.status(400).json({ message: "Bill and amount are required" });
@@ -142,6 +148,8 @@ export const payWithManualTill = async (req, res) => {
   }
 
   try {
+    logStart("wallet", "Manual till payment", { receiptId, amount, isStaff });
+
     const receipt = await Receipt.findById(receiptId);
     if (!receipt) return res.status(404).json({ message: "Bill not found" });
     if (!["unpaid", "partial"].includes(receipt.status)) {
@@ -167,6 +175,7 @@ export const payWithManualTill = async (req, res) => {
         paidBy: req.user._id,
         io,
       });
+      logSuccess("wallet", "Manual till payment applied by staff", { receiptId, amount: amt });
       return res.json({ message: "Payment recorded", receipt: updated });
     }
 
@@ -183,23 +192,25 @@ export const payWithManualTill = async (req, res) => {
     io.to(`branch:${receipt.branch}`).emit("receipt:manualPending", { receipt });
     io.to(`branch:${receipt.branch}`).emit("receipt:updated", receipt);
 
+    logSuccess("wallet", "Manual till payment queued for confirmation", { receiptId, amount: amt });
     res.json({ message: "Payment submitted — pending confirmation by the store", receipt });
   } catch (error) {
-    console.error("Error recording manual payment:", error.message);
-    res.status(500).json({ message: "Failed to record payment", error: error.message });
+    next(error);
   }
 };
 
 // @desc    Pay a bill (own or another's) via M-Pesa STK push, full or partial
 // @route   POST /api/wallet/pay/stk
 // @access  Protected
-export const payWithStk = async (req, res) => {
+export const payWithStk = async (req, res, next) => {
   const { receiptId, amount, phone } = req.body;
   if (!receiptId || !amount || !phone) {
     return res.status(400).json({ message: "Bill, amount and phone number are required" });
   }
 
   try {
+    logStart("wallet", "Initiating STK push", { receiptId, amount, phone });
+
     const receipt = await Receipt.findById(receiptId);
     if (!receipt) return res.status(404).json({ message: "Bill not found" });
     if (!["unpaid", "partial"].includes(receipt.status)) {
@@ -239,45 +250,54 @@ export const payWithStk = async (req, res) => {
     const io = req.app.get("io");
     io.to(`branch:${receipt.branch}`).emit("receipt:mpesaPending", receipt);
 
+    logSuccess("wallet", "STK push sent", { receiptId, checkoutRequestId: stkRes.CheckoutRequestID });
     res.json({
       message: "STK push sent. Enter your M-Pesa PIN to complete payment.",
       checkoutRequestId: stkRes.CheckoutRequestID,
     });
   } catch (error) {
-    console.error("Error initiating wallet STK push:", error.response?.data || error.message);
-    res.status(500).json({
-      message: error.response?.data?.errorMessage || error.message || "Failed to initiate payment",
-    });
+    // Preserve the M-Pesa-specific rejection reason (e.g. insufficient
+    // balance, invalid phone) instead of letting it flatten to a generic
+    // 500 — this message is the whole point of the failure response.
+    next(new AppError(
+      error.response?.data?.errorMessage || error.message || "Failed to initiate payment",
+      500
+    ));
   }
 };
 
 // @desc    Poll a wallet-initiated STK push
 // @route   GET /api/wallet/pay/stk/:receiptId/status
 // @access  Protected
-export const getWalletStkStatus = async (req, res) => {
+export const getWalletStkStatus = async (req, res, next) => {
   try {
+    logStart("wallet", "Checking STK status", { receiptId: req.params.receiptId });
+
     const receipt = await Receipt.findById(req.params.receiptId);
     if (!receipt) return res.status(404).json({ message: "Bill not found" });
 
     const settled = ["paid", "partial"].includes(receipt.status) && receipt.mpesaStatus === "success";
+
+    logSuccess("wallet", "STK status checked", { receiptId: req.params.receiptId, settled });
     res.json({
       status: settled ? "success" : receipt.mpesaStatus || "idle",
       receipt,
     });
   } catch (error) {
-    console.error("Error checking wallet STK status:", error.message);
-    res.status(500).json({ message: "Failed to check payment status" });
+    next(error);
   }
 };
 
 // @desc    Pay a bill using the logged-in customer's own reward points
 // @route   POST /api/wallet/pay/reward
 // @access  Protected
-export const payWithReward = async (req, res) => {
+export const payWithReward = async (req, res, next) => {
   const { receiptId, points } = req.body;
   if (!receiptId) return res.status(400).json({ message: "Bill is required" });
 
   try {
+    logStart("wallet", "Paying with reward points", { receiptId, user: req.user._id, points });
+
     const settings = await AdminSettings.getSettings();
     if (!settings.reward.enabled) return res.status(400).json({ message: "Rewards are not enabled" });
 
@@ -300,13 +320,17 @@ export const payWithReward = async (req, res) => {
     const io = req.app.get("io");
     const result = await applyRewardRedemption({ receipt, user, pointsToRedeem, io });
 
+    logSuccess("wallet", "Reward payment applied", { receiptId, pointsUsed: result.pointsUsed });
     res.json({
       message: `Applied ${result.pointsUsed} points (KES ${result.kesApplied}) to the bill`,
       receipt: result.receipt,
     });
   } catch (error) {
-    console.error("Error paying with reward:", error.message);
-    res.status(400).json({ message: error.message || "Failed to redeem points" });
+    // applyRewardRedemption throws plain Errors for validation-style
+    // failures (e.g. insufficient points) — this route has always treated
+    // those as 400s with the raw message, not generic 500s. Preserved via
+    // badRequest() rather than a bare next(error).
+    next(badRequest(error.message || "Failed to redeem points"));
   }
 };
 
@@ -318,13 +342,15 @@ export const payWithReward = async (req, res) => {
 //          in person, by looking them up via email or phone
 // @route   POST /api/wallet/admin/add-reward
 // @access  Protected — admin, branchManager, cashier
-export const adminAddReward = async (req, res) => {
+export const adminAddReward = async (req, res, next) => {
   const { identifier, amountSpent } = req.body;
   if (!identifier || !amountSpent) {
     return res.status(400).json({ message: "Customer email/phone and amount spent are required" });
   }
 
   try {
+    logStart("wallet", "Admin adding reward", { identifier, amountSpent, by: req.user._id });
+
     const customer = await findCustomerByIdentifier(identifier);
     if (!customer) {
       return res.status(404).json({ message: "No registered customer found with that email or phone" });
@@ -350,14 +376,14 @@ export const adminAddReward = async (req, res) => {
       createdBy: req.user._id,
     });
 
+    logSuccess("wallet", "Reward added by staff", { customerId: customer._id, points });
     res.json({
       message: `Added ${points} points to ${customer.fullName}`,
       points,
       customer: { id: customer._id, fullName: customer.fullName },
     });
   } catch (error) {
-    console.error("Error adding reward:", error.message);
-    res.status(500).json({ message: "Failed to add reward" });
+    next(error);
   }
 };
 
@@ -365,13 +391,15 @@ export const adminAddReward = async (req, res) => {
 //          own reward points (e.g. customer is at the till without cash)
 // @route   POST /api/wallet/admin/pay-with-reward
 // @access  Protected — admin, branchManager, cashier
-export const adminPayWithReward = async (req, res) => {
+export const adminPayWithReward = async (req, res, next) => {
   const { identifier, receiptId, points } = req.body;
   if (!identifier || !receiptId) {
     return res.status(400).json({ message: "Customer email/phone and bill are required" });
   }
 
   try {
+    logStart("wallet", "Admin paying with customer reward", { identifier, receiptId, by: req.user._id });
+
     const customer = await findCustomerByIdentifier(identifier);
     if (!customer) {
       return res.status(404).json({ message: "No registered customer found with that email or phone" });
@@ -391,13 +419,15 @@ export const adminPayWithReward = async (req, res) => {
     const io = req.app.get("io");
     const result = await applyRewardRedemption({ receipt, user: customer, pointsToRedeem, io });
 
+    logSuccess("wallet", "Reward payment applied by staff", { receiptId, customerId: customer._id, pointsUsed: result.pointsUsed });
     res.json({
       message: `Applied ${result.pointsUsed} points (KES ${result.kesApplied}) from ${customer.fullName}'s reward balance`,
       receipt: result.receipt,
     });
   } catch (error) {
-    console.error("Error paying with customer reward:", error.message);
-    res.status(400).json({ message: error.message || "Failed to redeem points" });
+    // Same reasoning as payWithReward above — applyRewardRedemption's
+    // errors are client-facing validation failures, not server faults.
+    next(badRequest(error.message || "Failed to redeem points"));
   }
 };
 
@@ -406,10 +436,12 @@ export const adminPayWithReward = async (req, res) => {
 //          pending/serving/cancel order-tracking flow, which doesn't apply here)
 // @route   GET /api/wallet/history?page=1&limit=10
 // @access  Protected — customer
-export const getMyBillHistory = async (req, res) => {
+export const getMyBillHistory = async (req, res, next) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.max(1, parseInt(req.query.limit) || 10);
+
+    logStart("wallet", "Loading bill history", { user: req.user._id, page, limit });
 
     const filter = { customer: req.user._id };
     const total = await Receipt.countDocuments(filter);
@@ -419,6 +451,7 @@ export const getMyBillHistory = async (req, res) => {
       .skip((page - 1) * limit)
       .limit(limit);
 
+    logSuccess("wallet", "Bill history loaded", { user: req.user._id, total, returned: receipts.length });
     res.json({
       receipts,
       page,
@@ -427,7 +460,6 @@ export const getMyBillHistory = async (req, res) => {
       totalPages: Math.max(1, Math.ceil(total / limit)),
     });
   } catch (error) {
-    console.error("Error fetching bill history:", error.message);
-    res.status(500).json({ message: "Failed to fetch bill history" });
+    next(error);
   }
 };
