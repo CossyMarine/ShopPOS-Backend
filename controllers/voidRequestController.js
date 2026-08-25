@@ -3,6 +3,7 @@ import Receipt from "../models/Receipt.js";
 import Order from "../models/Order.js";
 import VoidRequest from "../models/VoidRequest.js";
 import Product from "../models/Product.js";
+import { logStart, logSuccess } from "../utils/requestLogger.js";
 
 // Reverses a FIFO deduction — adds the quantity back as a new batch at the
 // original unit cost where known, so voiding a sale doesn't silently lose
@@ -28,8 +29,10 @@ const restockItems = async (lines, billId, restockedBy) => {
 //          (Super Admin can omit ?branch= to see every branch)
 // @route   GET /api/void-requests?branch=
 // @access  Protected — branchManager, admin
-export const getVoidRequests = async (req, res) => {
+export const getVoidRequests = async (req, res, next) => {
   try {
+    logStart("voidRequest", "Loading pending void requests", { branch: req.query.branch || "all" });
+
     const voidRequests = await VoidRequest.find({ status: "pending" })
       .populate({
         path: "receipt",
@@ -40,10 +43,10 @@ export const getVoidRequests = async (req, res) => {
 
     const filtered = voidRequests.filter((v) => v.receipt);
 
+    logSuccess("voidRequest", "Pending void requests loaded", { count: filtered.length });
     res.json(filtered);
   } catch (error) {
-    console.error("Error fetching void requests:", error.message);
-    res.status(500).json({ message: "Failed to fetch void requests", error: error.message });
+    next(error);
   }
 };
 
@@ -53,10 +56,12 @@ export const getVoidRequests = async (req, res) => {
 //          Omit it (or include every index) to request voiding the whole bill.
 // @route   POST /api/void-requests
 // @access  Protected — cashier, branchManager, admin
-export const createVoidRequest = async (req, res) => {
+export const createVoidRequest = async (req, res, next) => {
   try {
     const { receiptId, reason, items } = req.body;
     const requestedBy = req.user._id;
+
+    logStart("voidRequest", "Creating void request", { receiptId, requestedBy });
 
     if (!reason || !reason.trim()) {
       return res.status(400).json({ message: "A reason is required" });
@@ -117,10 +122,10 @@ export const createVoidRequest = async (req, res) => {
     const io = req.app.get("io");
     io.to(`branch:${receipt.branch}`).emit("voidRequest:created", voidRequest);
 
+    logSuccess("voidRequest", "Void request created", { voidRequestId: voidRequest._id, voidType });
     res.status(201).json({ message: "Void request submitted", voidRequest });
   } catch (error) {
-    console.error("Error creating void request:", error.message);
-    res.status(500).json({ message: "Failed to create void request", error: error.message });
+    next(error);
   }
 };
 
@@ -129,11 +134,13 @@ export const createVoidRequest = async (req, res) => {
 //          restocks them, and recalculates the bill's subtotal/status.
 // @route   PATCH /api/void-requests/:id/approve
 // @access  Protected — branchManager, admin
-export const approveVoidRequest = async (req, res) => {
+export const approveVoidRequest = async (req, res, next) => {
   const { id } = req.params;
   const reviewedBy = req.user._id;
 
   try {
+    logStart("voidRequest", "Approving void request", { voidRequestId: id, reviewedBy });
+
     const voidRequest = await VoidRequest.findByIdAndUpdate(
       id,
       { status: "approved", reviewedBy, reviewedAt: new Date() },
@@ -184,21 +191,23 @@ export const approveVoidRequest = async (req, res) => {
       io.to(`branch:${receipt.branch}`).emit("receipt:updated", receipt);
     }
 
+    logSuccess("voidRequest", "Void request approved", { voidRequestId: id, voidType: voidRequest.voidType });
     res.json({ message: "Void request approved", voidRequest, receipt });
   } catch (error) {
-    console.error("Error approving void request:", error.message);
-    res.status(500).json({ message: "Failed to approve void request", error: error.message });
+    next(error);
   }
 };
 
 // @desc    Reject a void request — receipt stays as-is
 // @route   PATCH /api/void-requests/:id/reject
 // @access  Protected — branchManager, admin
-export const rejectVoidRequest = async (req, res) => {
+export const rejectVoidRequest = async (req, res, next) => {
   const { id } = req.params;
   const reviewedBy = req.user._id;
 
   try {
+    logStart("voidRequest", "Rejecting void request", { voidRequestId: id, reviewedBy });
+
     const voidRequest = await VoidRequest.findByIdAndUpdate(
       id,
       { status: "rejected", reviewedBy, reviewedAt: new Date() },
@@ -212,9 +221,9 @@ export const rejectVoidRequest = async (req, res) => {
     const io = req.app.get("io");
     io.to(`branch:${voidRequest.receipt?.branch}`).emit("voidRequest:rejected", voidRequest);
 
+    logSuccess("voidRequest", "Void request rejected", { voidRequestId: id });
     res.json({ message: "Void request rejected", voidRequest });
   } catch (error) {
-    console.error("Error rejecting void request:", error.message);
-    res.status(500).json({ message: "Failed to reject void request", error: error.message });
+    next(error);
   }
 };
