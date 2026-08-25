@@ -1,10 +1,21 @@
 import mongoose from "mongoose";
 import dotenv from "dotenv";
+import * as Sentry from "@sentry/node";
 import app from "./app.js";
 import http from "http";
 import { Server } from "socket.io";
 
 dotenv.config();
+
+/* ========================================
+   🛡️ SENTRY
+   Must be initialized before the process-level handlers below, so they
+   can report to it, and before anything else runs.
+======================================== */
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+  environment: "production",
+});
 
 /* ========================================
    🛑 PROCESS-LEVEL SAFETY NETS
@@ -14,13 +25,14 @@ dotenv.config();
 ======================================== */
 process.on("unhandledRejection", (reason, promise) => {
   console.error("❌ Unhandled Rejection at:", promise, "reason:", reason);
+  Sentry.captureException(reason instanceof Error ? reason : new Error(String(reason)));
   // Logged, not exited — an unhandled rejection alone shouldn't take
-  // down a live POS. Revisit once Sentry is wired in if you want these
-  // to trigger alerts instead of just console output.
+  // down a live POS.
 });
 
 process.on("uncaughtException", (err) => {
   console.error("❌ Uncaught Exception:", err);
+  Sentry.captureException(err);
   // This means a bug escaped every try/catch and every promise handler —
   // the process state is no longer trustworthy, so exit and let your
   // process manager (pm2/systemd/Render) restart it clean.
