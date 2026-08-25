@@ -11,7 +11,7 @@ import {
   computeNetPay,
   estimateMonthlyGross,
 } from "./payrollController.js";
-import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
+import { logStart, logSuccess } from "../utils/requestLogger.js";
 import { getKenyanDate } from "../utils/dateHelpers.js";
 
 const currentPeriod = () => {
@@ -23,7 +23,7 @@ const currentPeriod = () => {
 // profile, wage setup, recent work history (shifts for cashiers, attendance
 // for everyone else), leave, full payslip history, a preview of what the
 // current/next payslip would look like, and the deduction menu for editing.
-export const getStaffOverview = async (req, res) => {
+export const getStaffOverview = async (req, res, next) => {
   const { userId } = req.params;
   try {
     logStart("staff", "Loading staff overview", { userId });
@@ -115,7 +115,6 @@ export const getStaffOverview = async (req, res) => {
       deductionOptions,
     });
   } catch (error) {
-    logError("staff", "Error loading staff overview", error);
-    res.status(500).json({ message: "Failed to load staff overview", error: error.message });
+    next(error);
   }
 };
