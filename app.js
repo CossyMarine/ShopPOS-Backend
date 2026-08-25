@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import morgan from "morgan";
+import helmet from "helmet";
 
 // Middlewares
 import { requestId } from "./Middlewares/requestId.js";
@@ -48,6 +49,10 @@ app.set("trust proxy", 1);
    else touches it, so it's available to morgan, controllers, and the
    error handler for end-to-end tracing of a single transaction. */
 app.use(requestId);
+
+/* Helmet — sets security-related HTTP headers (nosniff, frame-ancestors,
+   HSTS, hides X-Powered-By, etc). Applied early, before routes. */
+app.use(helmet());
 
 /* CORS — credentials:true is required so the httpOnly auth cookie is sent */
 const ALLOWED_ORIGINS = [
