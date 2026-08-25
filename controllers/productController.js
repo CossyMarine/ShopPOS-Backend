@@ -2,12 +2,12 @@
 import Product from "../models/Product.js";
 import { cloudinary } from "../Config/cloudinary.js";
 import { deductStockFIFO } from "../utils/productStock.js";
-import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
+import { logStart, logSuccess } from "../utils/requestLogger.js";
 
 // @desc    Get products for a branch (falls back to name if no image — handled in frontend)
 // @route   GET /api/products?branch=<id>
 // @access  Public (customer catalog) / Protected (staff, auto-scoped via sameBranch)
-export const getProducts = async (req, res) => {
+export const getProducts = async (req, res, next) => {
   try {
     logStart("product", "Loading products", { branch: req.query.branch || "all" });
 
@@ -34,8 +34,7 @@ export const getProducts = async (req, res) => {
     logSuccess("product", "Products loaded", { count: payload.length, strippedBatches: isCashier });
     res.json(payload);
   } catch (error) {
-    logError("product", "Error fetching products", error);
-    res.status(500).json({ message: "Failed to fetch products" });
+    next(error);
   }
 };
 
@@ -43,7 +42,7 @@ export const getProducts = async (req, res) => {
 //          Matches either the each barcode or the case barcode.
 // @route   GET /api/products/barcode/:code?branch=<id>
 // @access  Protected — cashier, storekeeper, branchManager, admin
-export const getProductByBarcode = async (req, res) => {
+export const getProductByBarcode = async (req, res, next) => {
   try {
     logStart("product", "Looking up barcode", { code: req.params.code, branch: req.query.branch });
 
@@ -67,15 +66,14 @@ export const getProductByBarcode = async (req, res) => {
     logSuccess("product", "Barcode matched", { code: req.params.code, productId: product._id, name: product.name });
     res.json(payload);
   } catch (error) {
-    logError("product", "Error looking up barcode", error);
-    res.status(500).json({ message: "Barcode lookup failed" });
+    next(error);
   }
 };
 
 // @desc    Upload a product image (falls back to name display if skipped)
 // @route   POST /api/products/upload-image
 // @access  Protected — storekeeper, branchManager, admin
-export const uploadProductImage = async (req, res) => {
+export const uploadProductImage = async (req, res, next) => {
   try {
     logStart("product", "Uploading product image");
 
@@ -87,15 +85,14 @@ export const uploadProductImage = async (req, res) => {
     logSuccess("product", "Product image uploaded", { url: req.file.path, publicId: req.file.filename });
     res.json({ url: req.file.path, publicId: req.file.filename });
   } catch (error) {
-    logError("product", "Error uploading product image", error);
-    res.status(500).json({ message: "Image upload failed" });
+    next(error);
   }
 };
 
 // @desc    Create a product (storekeeper adds a new item to the catalog)
 // @route   POST /api/products
 // @access  Protected — storekeeper, branchManager, admin
-export const createProduct = async (req, res) => {
+export const createProduct = async (req, res, next) => {
   try {
     const {
       name, barcode, category, unit, sellingPrice, casePrice, reorderLevel,
@@ -126,15 +123,14 @@ export const createProduct = async (req, res) => {
     logSuccess("product", "Product created", { productId: product._id, name });
     res.status(201).json(product);
   } catch (error) {
-    logError("product", "Error creating product", error);
-    res.status(500).json({ message: "Failed to create product" });
+    next(error);
   }
 };
 
 // @desc    Update product details (name, price, category, barcode, image, pack size, case price)
 // @route   PUT /api/products/:id
 // @access  Protected — storekeeper, branchManager, admin
-export const updateProduct = async (req, res) => {
+export const updateProduct = async (req, res, next) => {
   try {
     const allowed = [
       "name", "barcode", "category", "unit", "sellingPrice", "casePrice", "reorderLevel",
@@ -168,8 +164,7 @@ export const updateProduct = async (req, res) => {
     logSuccess("product", "Product updated", { productId: product._id });
     res.json(product);
   } catch (error) {
-    logError("product", "Error updating product", error);
-    res.status(500).json({ message: "Failed to update product" });
+    next(error);
   }
 };
 
@@ -183,7 +178,7 @@ export const updateProduct = async (req, res) => {
 // @route   POST /api/products/:id/receive-stock
 // @body    { quantity, costPerUnit, receivedAs?: "case"|"each", expiryDate?, supplierNote? }
 // @access  Protected — storekeeper, branchManager, admin
-export const receiveStock = async (req, res) => {
+export const receiveStock = async (req, res, next) => {
   try {
     const { quantity, costPerUnit, receivedAs, expiryDate, supplierNote } = req.body;
     logStart("product", "Receiving stock", { productId: req.params.id, quantity, costPerUnit, receivedAs });
@@ -238,8 +233,7 @@ export const receiveStock = async (req, res) => {
     });
     res.json(product);
   } catch (error) {
-    logError("product", "Error receiving stock", error);
-    res.status(500).json({ message: "Failed to receive stock" });
+    next(error);
   }
 };
 
@@ -250,7 +244,7 @@ export const sellProductStock = deductStockFIFO;
 // @desc    Delete a product
 // @route   DELETE /api/products/:id
 // @access  Protected — branchManager, admin
-export const deleteProduct = async (req, res) => {
+export const deleteProduct = async (req, res, next) => {
   try {
     logStart("product", "Deleting product", { productId: req.params.id });
 
@@ -268,7 +262,6 @@ export const deleteProduct = async (req, res) => {
     logSuccess("product", "Product deleted", { productId: req.params.id, name: product.name });
     res.json({ message: "Product deleted" });
   } catch (error) {
-    logError("product", "Error deleting product", error);
-    res.status(500).json({ message: "Failed to delete product" });
+    next(error);
   }
 };
