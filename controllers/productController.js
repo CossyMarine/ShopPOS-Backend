@@ -97,7 +97,7 @@ export const createProduct = async (req, res, next) => {
     const {
       name, barcode, category, unit, sellingPrice, casePrice, reorderLevel,
       packSize, caseLabel, caseBarcode,
-      imageUrl, imagePublicId, branch,
+      imageUrl, imagePublicId, branch, vatClass,
     } = req.body;
 
     logStart("product", "Creating product", { name, branch, sellingPrice });
@@ -117,6 +117,7 @@ export const createProduct = async (req, res, next) => {
       caseBarcode: caseBarcode || null,
       casePrice: resolvedPackSize > 1 && casePrice ? Number(casePrice) : null,
       imageUrl: imageUrl || null, imagePublicId: imagePublicId || null,
+      vatClass: vatClass || "standard",
       branch, batches: [],
     });
 
@@ -134,7 +135,7 @@ export const updateProduct = async (req, res, next) => {
   try {
     const allowed = [
       "name", "barcode", "category", "unit", "sellingPrice", "casePrice", "reorderLevel",
-      "packSize", "caseLabel", "caseBarcode", "imageUrl", "imagePublicId", "isActive",
+      "packSize", "caseLabel", "caseBarcode", "imageUrl", "imagePublicId", "isActive", "vatClass",
     ];
     const updates = {};
     allowed.forEach((key) => { if (req.body[key] !== undefined) updates[key] = req.body[key]; });
