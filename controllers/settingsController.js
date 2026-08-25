@@ -1,26 +1,29 @@
 // controllers/settingsController.js
 import AdminSettings from "../models/AdminSettings.js";
+import { logStart, logSuccess } from "../utils/requestLogger.js";
 
 // @desc    Get full admin settings
 // @route   GET /api/settings
 // @access  Protected — admin
-export const getSettings = async (req, res) => {
+export const getSettings = async (req, res, next) => {
   try {
+    logStart("settings", "Loading admin settings");
     const settings = await AdminSettings.getSettings();
+    logSuccess("settings", "Admin settings loaded");
     res.json(settings);
   } catch (error) {
-    console.error("Error fetching settings:", error.message);
-    res.status(500).json({ message: "Failed to fetch settings" });
+    next(error);
   }
 };
 
 // @desc    Update admin settings (partial merge — send only what changed)
 // @route   PATCH /api/settings
 // @access  Protected — admin
-
-export const updateSettings = async (req, res) => {
+export const updateSettings = async (req, res, next) => {
   const { tillNumber, tillName, whatsappNumber, callNumber, reward, vat, assumeTableNumberCustomer, assumeTableNumberWaiter, allowPrintingDuringPayment } = req.body;
   try {
+    logStart("settings", "Updating admin settings", { fields: Object.keys(req.body) });
+
     const settings = await AdminSettings.getSettings();
     if (tillNumber !== undefined) settings.tillNumber = tillNumber;
     if (tillName !== undefined) settings.tillName = tillName;
@@ -38,15 +41,19 @@ export const updateSettings = async (req, res) => {
       settings.vat = { ...current, ...vat };
     }
     await settings.save();
+
+    logSuccess("settings", "Admin settings updated");
     res.json(settings);
   } catch (error) {
-    res.status(500).json({ message: "Failed to update settings", error: error.message });
+    next(error);
   }
 };
 
-export const getPublicSettings = async (req, res) => {
+export const getPublicSettings = async (req, res, next) => {
   try {
+    logStart("settings", "Loading public settings");
     const s = await AdminSettings.getSettings();
+    logSuccess("settings", "Public settings loaded");
     res.json({
       tillNumber: s.tillNumber,
       tillName: s.tillName,
@@ -68,6 +75,6 @@ export const getPublicSettings = async (req, res) => {
       },
     });
   } catch (error) {
-    res.status(500).json({ message: "Failed to fetch settings" });
+    next(error);
   }
 };
