@@ -2,6 +2,7 @@
 // Centralized error handler — registered LAST in app.js, after all routes.
 // Reuses utils/requestLogger.js's logError so you keep its Mongo-specific
 // parsing (ValidationError / CastError / duplicate key) instead of losing it.
+import * as Sentry from "@sentry/node";
 import { logError } from "../utils/requestLogger.js";
 
 export const notFoundHandler = (req, res, next) => {
@@ -11,6 +12,19 @@ export const notFoundHandler = (req, res, next) => {
 export const errorHandler = (err, req, res, next) => {
   const tag = req.requestId ? `req:${req.requestId}` : "error";
   logError(tag, `${req.method} ${req.originalUrl}`, err);
+
+  // Only report unexpected errors to Sentry — AppError (isOperational) is
+  // normal control flow (validation, 404s, auth failures), not a bug.
+  if (!err.isOperational) {
+    Sentry.captureException(err, {
+      tags: { requestId: req.requestId },
+      extra: {
+        method: req.method,
+        path: req.originalUrl,
+        userId: req.user?._id,
+      },
+    });
+  }
 
   // Known, operational errors (AppError) — safe to expose statusCode/message.
   if (err.isOperational) {
