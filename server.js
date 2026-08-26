@@ -4,6 +4,8 @@ import * as Sentry from "@sentry/node";
 import app from "./app.js";
 import http from "http";
 import { Server } from "socket.io";
+import cron from "node-cron";
+import { applyDuePriceSchedules } from "./utils/applyScheduledPriceChanges.js";
 
 dotenv.config();
 
@@ -71,6 +73,20 @@ export const io = new Server(server, {
 
 /* Make io accessible in routes/controllers via req.app.get("io") */
 app.set("io", io);
+
+/* ========================================
+   ⏰ SCHEDULED PRICE CHANGES
+   Runs every minute — catches any price schedule whose effective time has
+   arrived. getProducts also does a lazy catch-up on every catalog load, so
+   this cron is really just for accuracy when nobody happens to be shopping
+   at the exact minute a price is due to change.
+======================================== */
+cron.schedule("* * * * *", () => {
+  applyDuePriceSchedules(io).catch((err) => {
+    console.error("❌ Failed to apply scheduled price changes:", err);
+    Sentry.captureException(err);
+  });
+});
 
 /* ========================================
    🔗 SOCKET CONNECTION — ROOMS
