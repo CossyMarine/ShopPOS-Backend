@@ -7,6 +7,7 @@ import { generateReceiptForOrder } from "../utils/generateReceipt.js";
 import { deductStockFIFO } from "../utils/productStock.js";
 import { buildOrderVat } from "../utils/vat.js";
 import { notFound } from "../utils/AppError.js";
+import { loadLivePromotions, applyPromotionToLine } from "../utils/promotionEngine.js";
 
 // @desc    Finalize a checkout: creates the order, deducts stock FIFO, generates receipt
 // @route   POST /api/orders
@@ -25,6 +26,12 @@ export const createOrder = async (req, res, next) => {
     await session.withTransaction(async () => {
       const settings = await AdminSettings.getSettings();
 
+      // Promotions are loaded once per checkout and applied fresh from the
+      // product's live sellingPrice — never trusting whatever unitPrice the
+      // client sent. A tampered or stale client-side price can't sneak a
+      // bigger discount through than what's actually configured right now.
+      const livePromotions = await loadLivePromotions(branch);
+
       // Deduct stock FIFO for every line inside the transaction — if any
       // line fails (product not found, insufficient stock), everything
       // deducted so far in this loop is rolled back automatically when
@@ -32,7 +39,7 @@ export const createOrder = async (req, res, next) => {
       // order created" bug flagged earlier.
       for (const line of items) {
         if (!line.productId) {
-          line.vatClass = "standard"; // manual scan fallback — no product to read from
+          line.vatClass = "standard"; // manual scan fallback — no product to read from, no promo lookup possible
           continue;
         }
         const product = await Product.findById(line.productId).session(session);
@@ -40,6 +47,14 @@ export const createOrder = async (req, res, next) => {
         const { avgCostPerUnit } = await deductStockFIFO(product, line.quantity, { session });
         line.costPriceAtSale = avgCostPerUnit;
         line.vatClass = product.vatClass || "standard";
+
+        const priced = applyPromotionToLine(livePromotions, product, line.quantity, product.sellingPrice);
+        line.originalUnitPrice = product.sellingPrice;
+        line.unitPrice = priced.unitPrice;
+        line.lineTotal = priced.lineTotal;
+        line.promotionApplied = priced.promotionApplied;
+        line.promotionName = priced.promotionName;
+        line.discountAmount = priced.discountAmount;
       }
 
       const rungUpTotal = items.reduce((sum, i) => sum + i.lineTotal, 0);
