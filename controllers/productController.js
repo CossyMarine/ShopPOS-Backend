@@ -3,6 +3,10 @@ import Product from "../models/Product.js";
 import { cloudinary } from "../Config/cloudinary.js";
 import { deductStockFIFO } from "../utils/productStock.js";
 import { logStart, logSuccess } from "../utils/requestLogger.js";
+import AuditLog from "../models/AuditLog.js";
+import { applyDuePriceSchedules } from "../utils/applyScheduledPriceChanges.js";
+import { loadLivePromotions, bestPromotionFor } from "../utils/promotionEngine.js";
+
 
 // @desc    Get products for a branch (falls back to name if no image — handled in frontend)
 // @route   GET /api/products?branch=<id>
@@ -11,12 +15,21 @@ export const getProducts = async (req, res, next) => {
   try {
     logStart("product", "Loading products", { branch: req.query.branch || "all" });
 
+    // Lazy catch-up: applies any price schedule whose effective time has
+    // already passed, in case the cron missed it (server asleep, etc). This
+    // is the main "load the catalog" entrypoint every screen hits, so it's
+    // the most reliable place to guarantee schedules are never stale for long.
+    const io = req.app.get("io");
+    await applyDuePriceSchedules(io);
+
     const filter = { isActive: true };
     if (req.query.branch) filter.branch = req.query.branch;
 
     const products = await Product.find(filter)
       .populate("unit", "name abbreviation")
       .sort({ category: 1, name: 1 });
+
+    const livePromotions = req.query.branch ? await loadLivePromotions(req.query.branch) : [];
 
     // Cashiers sell strictly at sellingPrice/casePrice — those are set by
     // storekeeper/branchManager/admin via updateProduct. Batch-level cost
@@ -28,42 +41,29 @@ export const getProducts = async (req, res, next) => {
     const payload = products.map((p) => {
       const obj = p.toObject({ virtuals: true });
       if (isCashier) delete obj.batches;
+
+      // A live preview of what checkout would actually charge — same math
+      // that runs server-side in createOrder, so the cart never surprises
+      // anyone with a different number at payment time.
+      const promo = bestPromotionFor(livePromotions, p);
+      if (promo) {
+        const discountPerUnit = promo.type === "percent_off"
+          ? p.sellingPrice * (promo.value / 100)
+          : Math.min(promo.value, p.sellingPrice);
+        obj.activePromotion = {
+          _id: promo._id,
+          name: promo.name,
+          type: promo.type,
+          value: promo.value,
+          effectivePrice: Number(Math.max(0, p.sellingPrice - discountPerUnit).toFixed(2)),
+        };
+      } else {
+        obj.activePromotion = null;
+      }
       return obj;
     });
 
     logSuccess("product", "Products loaded", { count: payload.length, strippedBatches: isCashier });
-    res.json(payload);
-  } catch (error) {
-    next(error);
-  }
-};
-
-// @desc    Look up a single product by barcode — powers the cashier scan input.
-//          Matches either the each barcode or the case barcode.
-// @route   GET /api/products/barcode/:code?branch=<id>
-// @access  Protected — cashier, storekeeper, branchManager, admin
-export const getProductByBarcode = async (req, res, next) => {
-  try {
-    logStart("product", "Looking up barcode", { code: req.params.code, branch: req.query.branch });
-
-    const filter = {
-      isActive: true,
-      $or: [{ barcode: req.params.code }, { caseBarcode: req.params.code }],
-    };
-    if (req.query.branch) filter.branch = req.query.branch;
-
-    const product = await Product.findOne(filter).populate("unit", "name abbreviation");
-    if (!product) {
-      console.warn(`[product] ⚠️ No product found for barcode: ${req.params.code}`);
-      return res.status(404).json({ message: "Product not found" });
-    }
-
-    // Same cost-price stripping as getProducts — cashier only ever needs
-    // sellingPrice/casePrice to ring up an item, never the cost batches.
-    const payload = product.toObject({ virtuals: true });
-    if (req.user?.role === "cashier") delete payload.batches;
-
-    logSuccess("product", "Barcode matched", { code: req.params.code, productId: product._id, name: product.name });
     res.json(payload);
   } catch (error) {
     next(error);
@@ -161,6 +161,30 @@ export const updateProduct = async (req, res, next) => {
     }
 
     const product = await Product.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true });
+
+    // Price changes go on the audit trail too — a direct edit here is just
+    // as much a pricing decision as a scheduled one, and "who changed what
+    // and when" shouldn't have a blind spot for the immediate-effect path.
+    if (updates.sellingPrice !== undefined && updates.sellingPrice !== existing.sellingPrice) {
+      await AuditLog.create({
+        entityType: "Product",
+        entityId: product._id,
+        action: "priceChanged",
+        performedBy: req.user._id,
+        branch: product.branch,
+        details: { productName: product.name, field: "sellingPrice", previousValue: existing.sellingPrice, newValue: updates.sellingPrice },
+      });
+    }
+    if (updates.casePrice !== undefined && updates.casePrice !== existing.casePrice) {
+      await AuditLog.create({
+        entityType: "Product",
+        entityId: product._id,
+        action: "priceChanged",
+        performedBy: req.user._id,
+        branch: product.branch,
+        details: { productName: product.name, field: "casePrice", previousValue: existing.casePrice, newValue: updates.casePrice },
+      });
+    }
 
     logSuccess("product", "Product updated", { productId: product._id });
     res.json(product);
