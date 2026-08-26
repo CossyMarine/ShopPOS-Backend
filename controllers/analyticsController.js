@@ -436,3 +436,155 @@ function costEstimationStages() {
     },
   ];
     }
+
+// --- Add these two exports to controllers/analyticsController.js ---
+// (reuses resolveAnalyticsRange, costEstimationStages, and the ObjectId
+//  destructure already at the top of the file — no new imports needed)
+
+// ---------------------------------------------------------------------
+// GET /api/analytics/category-margin?branch=&range=today|last_7_days|last_30_days|year|custom&from=&to=
+// Revenue, cost and margin % rolled up by product category — the number
+// that answers "which departments actually make money" rather than just
+// "which departments sell the most" (revenue alone hides a category that
+// sells a lot but at razor-thin or negative margin).
+// ---------------------------------------------------------------------
+export const getCategoryMargin = async (req, res, next) => {
+  try {
+    const { branch, range = "today", from, to } = req.query;
+    logStart("analytics", "Loading category margin report", { branch: branch || "all", range });
+
+    const { start, end } = resolveAnalyticsRange(range, from, to);
+    const branchMatch = branch ? { branch: new ObjectId(branch) } : {};
+
+    const paidMatch = {
+      status: "paid",
+      paidAt: { $gte: start, $lte: end },
+      ...branchMatch,
+    };
+
+    const rows = await Receipt.aggregate([
+      { $match: paidMatch },
+      { $unwind: "$items" },
+      { $lookup: { from: "products", localField: "items.productId", foreignField: "_id", as: "product" } },
+      { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
+      ...costEstimationStages(),
+      {
+        $group: {
+          _id: { $ifNull: ["$product.category", "Uncategorized"] },
+          revenue: { $sum: "$items.lineTotal" },
+          cost: { $sum: "$lineCost" },
+          unitsSold: { $sum: "$items.quantity" },
+        },
+      },
+      { $sort: { revenue: -1 } },
+    ]);
+
+    const categories = rows.map((r) => {
+      const revenue = Math.round(r.revenue);
+      const cost = Math.round(r.cost);
+      const profit = revenue - cost;
+      return {
+        category: r._id,
+        revenue,
+        cost,
+        profit,
+        marginPct: revenue > 0 ? Math.round((profit / revenue) * 1000) / 10 : 0,
+        unitsSold: r.unitsSold,
+      };
+    }).sort((a, b) => b.profit - a.profit);
+
+    const totals = categories.reduce(
+      (acc, c) => ({ revenue: acc.revenue + c.revenue, cost: acc.cost + c.cost, profit: acc.profit + c.profit }),
+      { revenue: 0, cost: 0, profit: 0 }
+    );
+
+    logSuccess("analytics", "Category margin report loaded", { categoryCount: categories.length });
+    res.json({
+      range: { preset: range, start, end },
+      categories,
+      totals: {
+        ...totals,
+        marginPct: totals.revenue > 0 ? Math.round((totals.profit / totals.revenue) * 1000) / 10 : 0,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ---------------------------------------------------------------------
+// GET /api/analytics/dead-stock?branch=&days=30
+// Unlike stuckItems in the overview (which only looks inside whatever
+// date range is currently selected), this looks at EVERY product's
+// all-time last sale date and flags anything that hasn't moved in
+// `days` — or has never sold at all — regardless of what range someone
+// happens to have picked elsewhere on the page. Ranked by the cash value
+// sitting on the shelf doing nothing, since that's what actually matters
+// for deciding what to discount, transfer, or write off.
+// ---------------------------------------------------------------------
+export const getDeadStock = async (req, res, next) => {
+  try {
+    const { branch, days = 30 } = req.query;
+    const thresholdDays = Math.max(1, parseInt(days, 10) || 30);
+    logStart("analytics", "Loading dead stock report", { branch: branch || "all", thresholdDays });
+
+    const branchMatch = branch ? { branch: new ObjectId(branch) } : {};
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - thresholdDays);
+
+    const [lastSoldAgg, products] = await Promise.all([
+      // All-time last sale date per product — not bounded by any range.
+      Receipt.aggregate([
+        { $match: { status: "paid", "items.productId": { $ne: null } } },
+        { $unwind: "$items" },
+        { $match: { "items.productId": { $ne: null } } },
+        { $group: { _id: "$items.productId", lastSoldAt: { $max: "$paidAt" } } },
+      ]),
+      Product.find({ isActive: true, ...branchMatch }).populate("branch", "name").lean(),
+    ]);
+
+    const lastSoldMap = new Map(lastSoldAgg.map((r) => [String(r._id), r.lastSoldAt]));
+
+    const avgCostPerEach = (product) => {
+      const batches = product.batches || [];
+      const totalQty = batches.reduce((s, b) => s + b.quantity, 0);
+      if (!totalQty) return 0;
+      const totalCost = batches.reduce((s, b) => s + b.quantity * b.costPerUnit, 0);
+      return totalCost / totalQty;
+    };
+
+    const items = [];
+    for (const p of products) {
+      const currentStock = (p.batches || []).reduce((s, b) => s + b.quantity, 0);
+      if (currentStock <= 0) continue; // nothing tied up if there's nothing on the shelf
+
+      const lastSoldAt = lastSoldMap.get(String(p._id)) || null;
+      const isDead = !lastSoldAt || new Date(lastSoldAt) < cutoff;
+      if (!isDead) continue;
+
+      const stockValue = Math.round(currentStock * avgCostPerEach(p));
+      const daysSinceLastSale = lastSoldAt
+        ? Math.floor((Date.now() - new Date(lastSoldAt).getTime()) / (1000 * 60 * 60 * 24))
+        : null;
+
+      items.push({
+        productId: p._id,
+        productName: p.name,
+        category: p.category,
+        branchName: p.branch?.name || null,
+        currentStock,
+        stockValue,
+        lastSoldAt,
+        daysSinceLastSale, // null = never sold at all
+      });
+    }
+
+    items.sort((a, b) => b.stockValue - a.stockValue);
+    const totalValueTiedUp = items.reduce((s, i) => s + i.stockValue, 0);
+
+    logSuccess("analytics", "Dead stock report loaded", { count: items.length, totalValueTiedUp });
+    res.json({ thresholdDays, items, totalValueTiedUp });
+  } catch (error) {
+    next(error);
+  }
+};
