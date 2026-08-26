@@ -16,6 +16,10 @@ const orderItemSchema = new mongoose.Schema(
     // (manual scan fallback) or receipts predating this field.
     costPriceAtSale: { type: Number, default: null },
     vatClass: { type: String, enum: ["standard", "zero", "exempt"], default: "standard" },
+    originalUnitPrice: { type: Number, default: null },
+    promotionApplied: { type: mongoose.Schema.Types.ObjectId, ref: "Promotion", default: null },
+    promotionName: { type: String, default: null },
+    discountAmount: { type: Number, default: 0 },
   },
   { _id: false }
 );
