@@ -70,6 +70,38 @@ export const getProducts = async (req, res, next) => {
   }
 };
 
+// @desc    Look up a single product by barcode — powers the cashier scan input.
+//          Matches either the each barcode or the case barcode.
+// @route   GET /api/products/barcode/:code?branch=<id>
+// @access  Protected — cashier, storekeeper, branchManager, admin
+export const getProductByBarcode = async (req, res, next) => {
+  try {
+    logStart("product", "Looking up barcode", { code: req.params.code, branch: req.query.branch });
+
+    const filter = {
+      isActive: true,
+      $or: [{ barcode: req.params.code }, { caseBarcode: req.params.code }],
+    };
+    if (req.query.branch) filter.branch = req.query.branch;
+
+    const product = await Product.findOne(filter).populate("unit", "name abbreviation");
+    if (!product) {
+      console.warn(`[product] ⚠️ No product found for barcode: ${req.params.code}`);
+      return res.status(404).json({ message: "Product not found" });
+    }
+
+    // Same cost-price stripping as getProducts — cashier only ever needs
+    // sellingPrice/casePrice to ring up an item, never the cost batches.
+    const payload = product.toObject({ virtuals: true });
+    if (req.user?.role === "cashier") delete payload.batches;
+
+    logSuccess("product", "Barcode matched", { code: req.params.code, productId: product._id, name: product.name });
+    res.json(payload);
+  } catch (error) {
+    next(error);
+  }
+};
+
 // @desc    Upload a product image (falls back to name display if skipped)
 // @route   POST /api/products/upload-image
 // @access  Protected — storekeeper, branchManager, admin
