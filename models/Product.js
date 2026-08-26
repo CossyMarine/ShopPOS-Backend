@@ -22,7 +22,12 @@ const batchSchema = new mongoose.Schema(
 const productSchema = new mongoose.Schema(
   {
     name:          { type: String, required: true, trim: true },
-    barcode:       { type: String, trim: true, unique: true, sparse: true }, // EAN-13/CODE128/QR payload — the EACH barcode
+    // Unique per branch, not globally — see the compound index below.
+    // Two branches stocking the same real-world item (same barcode on the
+    // bottle) is normal; each gets its own Product document since stock,
+    // batches, and pricing are all branch-scoped. A global unique index
+    // would let only ONE branch in the whole system ever stock that barcode.
+    barcode:       { type: String, trim: true }, // EAN-13/CODE128/QR payload — the EACH barcode
     category:      { type: String, default: "General", trim: true },
     vatClass:      { type: String, enum: ["standard", "zero", "exempt"], default: "standard" },
     unit:          { type: mongoose.Schema.Types.ObjectId, ref: "InventoryUnit", required: true }, // the LOOSE/each unit, e.g. Kilogram
@@ -33,7 +38,8 @@ const productSchema = new mongoose.Schema(
     packSize:      { type: Number, default: 1, min: 1 },
     // Display label for the purchase unit when packSize > 1, e.g. "Sack", "Carton", "Crate"
     caseLabel:     { type: String, default: "Carton", trim: true },
-    // Optional separate barcode printed on the case itself, distinct from the each barcode
+    // Optional separate barcode printed on the case itself, distinct from the each barcode.
+    // Also scoped per branch by the compound index below, same reasoning as `barcode`.
     caseBarcode:   { type: String, trim: true, default: null },
 
     // Price per loose/each unit — e.g. KES 180 per kg. Always required.
@@ -57,6 +63,12 @@ const productSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Barcode uniqueness is scoped to a branch, not global — see the comment on
+// the `barcode` field above. `sparse: true` means products with no barcode
+// at all (null/undefined) never collide with each other.
+productSchema.index({ branch: 1, barcode: 1 }, { unique: true, sparse: true });
+productSchema.index({ branch: 1, caseBarcode: 1 }, { unique: true, sparse: true });
 
 // Sum of all batch quantities = current stock, always derived, never stale.
 // Guarded because queries that .select() a subset of fields (e.g. the public
