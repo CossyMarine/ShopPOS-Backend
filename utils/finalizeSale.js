@@ -85,13 +85,23 @@ export const finalizeSale = async ({
         line.costPriceAtSale = avgCostPerUnit;
         line.vatClass = product.vatClass || "standard";
 
-        const priced = applyPromotionToLine(livePromotions, product, line.quantity, product.sellingPrice);
-        line.originalUnitPrice = product.sellingPrice;
-        line.unitPrice = priced.unitPrice;
-        line.lineTotal = priced.lineTotal;
-        line.promotionApplied = priced.promotionApplied;
-        line.promotionName = priced.promotionName;
-        line.discountAmount = priced.discountAmount;
+        // A live sale prices off whatever's true RIGHT NOW — that's what
+        // "live" means. An offline sale already happened at a specific
+        // moment in the past; re-pricing it against promotions/prices that
+        // are live NOW (at sync time, possibly days later) would silently
+        // change what the customer was actually charged in the shop. So
+        // offline-synced lines keep exactly the price they were rung up
+        // at — only a genuinely live checkout gets the fresh server-side
+        // promo/price computation.
+        if (!syncedFromOffline) {
+          const priced = applyPromotionToLine(livePromotions, product, line.quantity, product.sellingPrice);
+          line.originalUnitPrice = product.sellingPrice;
+          line.unitPrice = priced.unitPrice;
+          line.lineTotal = priced.lineTotal;
+          line.promotionApplied = priced.promotionApplied;
+          line.promotionName = priced.promotionName;
+          line.discountAmount = priced.discountAmount;
+        }
       }
 
       const rungUpTotal = items.reduce((sum, i) => sum + i.lineTotal, 0);
