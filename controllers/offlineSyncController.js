@@ -9,13 +9,18 @@ import { logStart, logSuccess } from "../utils/requestLogger.js";
 //          which queue entries are safe to clear and which need to stay
 //          queued (or be surfaced to a manager) for another attempt.
 //
+//          Offline mode only supports CASH payments — anything else needs a
+//          live network step (M-Pesa STK push, till confirmation) that
+//          simply can't happen with no connection, so those payment methods
+//          are blocked at checkout time on the client and never reach here.
+//
 //          Every sale MUST carry its own clientSaleId (generated on-device
 //          the instant checkout was tapped, before the request was ever
 //          attempted) — this is what makes it safe to call this endpoint
 //          more than once with the same backlog if a sync gets interrupted
 //          partway through.
 // @route   POST /api/orders/sync-batch
-// @body    { sales: [{ clientSaleId, items, branch, customer, customerName, soldAt, shiftId }, ...] }
+// @body    { sales: [{ clientSaleId, items, branch, customer, customerName, soldAt, shiftId, cashPayment: { amountPaid } }, ...] }
 // @access  Protected — cashier, branchManager, admin
 //          (deliberately NOT gated by requireOpenShift — these sales already
 //          happened under a shift that was open on the device at the time;
@@ -37,10 +42,14 @@ export const syncOfflineOrders = async (req, res, next) => {
     // parallel would let two lines in the same batch race on the same
     // product's stock instead of deducting in a predictable order.
     for (const sale of sales) {
-      const { clientSaleId, items, branch, customer, customerName, soldAt, shiftId } = sale;
+      const { clientSaleId, items, branch, customer, customerName, soldAt, shiftId, cashPayment } = sale;
 
       if (!clientSaleId) {
         results.push({ clientSaleId: null, status: "failed", error: "Missing clientSaleId — cannot sync a sale without an idempotency key" });
+        continue;
+      }
+      if (!cashPayment || !cashPayment.amountPaid) {
+        results.push({ clientSaleId, status: "failed", error: "Offline sales must include cash payment details — this method isn't supported offline" });
         continue;
       }
 
@@ -56,6 +65,7 @@ export const syncOfflineOrders = async (req, res, next) => {
           clientSaleId,
           allowNegativeStock: true, // this sale already happened — never reject it for stock that's since run out
           syncedFromOffline: true,
+          cashPayment,
           io,
         });
 
