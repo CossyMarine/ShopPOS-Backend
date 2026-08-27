@@ -9,6 +9,7 @@ import { deductStockFIFO } from "./productStock.js";
 import { buildOrderVat } from "./vat.js";
 import { notFound, badRequest } from "./AppError.js";
 import { loadLivePromotions, applyPromotionToLine } from "./promotionEngine.js";
+import { creditCashback } from "./walletPayments.js";
 
 // The single place a sale actually gets written to the database — shared by
 // the live checkout endpoint (createOrder) and the offline batch-sync
@@ -22,6 +23,15 @@ import { loadLivePromotions, applyPromotionToLine } from "./promotionEngine.js";
 //
 // allowNegativeStock should only ever be true from the offline sync path —
 // see the comment on deductStockFIFO for why.
+//
+// cashPayment: { amountPaid } — ONLY set for offline-synced sales. A cash
+// sale is the one payment method that needs no live network step to
+// actually happen (unlike M-Pesa STK push or till confirmation), so it's
+// the only method offline mode supports. When present, the receipt is
+// marked paid in the SAME transaction as its creation — mirroring exactly
+// what payReceipt does for a live cash sale — instead of landing as an
+// unpaid receipt waiting for a second online-only call that offline mode
+// has no way to make.
 export const finalizeSale = async ({
   items,
   branch,
@@ -33,6 +43,7 @@ export const finalizeSale = async ({
   clientSaleId,
   allowNegativeStock = false,
   syncedFromOffline = false,
+  cashPayment,   // { amountPaid } — offline sync only
   io,
 }) => {
   if (!items || items.length === 0) {
@@ -40,7 +51,7 @@ export const finalizeSale = async ({
   }
 
   // Idempotent replay: same clientSaleId that already landed → hand back
-  // what was already created, don't touch stock a second time.
+  // what was already created, don't touch stock or payment a second time.
   if (clientSaleId) {
     const existing = await Order.findOne({ clientSaleId });
     if (existing) {
@@ -111,13 +122,34 @@ export const finalizeSale = async ({
       order = created[0];
 
       receipt = await generateReceiptForOrder(order, { session, shift: shiftId });
+
+      if (cashPayment) {
+        const received = Number(cashPayment.amountPaid);
+        const balanceDue = receipt.totalDue; // full amount — offline sales are never partial
+        const changeGiven = Number((Math.max(received, balanceDue) - balanceDue).toFixed(2));
+
+        receipt.status = "paid";
+        receipt.paymentMethod = "cash";
+        receipt.cashAmount = balanceDue;
+        receipt.tillAmount = 0;
+        receipt.amountPaid = receipt.totalDue;
+        receipt.changeGiven = changeGiven;
+        receipt.paidAt = order.soldAt; // the actual moment of sale, not sync time
+        receipt.payments.push({
+          amount: balanceDue,
+          method: "cash",
+          paidBy: cashierId,
+          paidAt: order.soldAt,
+        });
+
+        await creditCashback(receipt, balanceDue, { session });
+        await receipt.save({ session });
+      }
     });
   } finally {
     await session.endSession();
   }
 
-  // Emit only after commit — and only for a genuinely new sale, not a
-  // duplicate replay (screens that already saw this sale don't need it again).
   if (io) {
     io.to(`branch:${branch}`).emit("sale:created", { order, receipt });
   }
