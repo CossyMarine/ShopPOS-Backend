@@ -2,6 +2,7 @@
 import StockAdjustment from "../models/StockAdjustment.js";
 import AuditLog from "../models/AuditLog.js";
 import Product from "../models/Product.js";
+import Shift from "../models/Shift.js";
 import { deductStockFIFO } from "../utils/productStock.js";
 import { logStart, logSuccess } from "../utils/requestLogger.js";
 
@@ -216,6 +217,7 @@ export const getAuditLog = async (req, res, next) => {
     next(error);
   }
 };
+
 // @desc    Groups approved shrinkage (damaged/expired/stolen/spillage/etc.)
 //          by the shift it happened under — not just by who filed it, since
 //          the person filing an adjustment and the person whose till was
