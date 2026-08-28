@@ -216,3 +216,80 @@ export const getAuditLog = async (req, res, next) => {
     next(error);
   }
 };
+// @desc    Groups approved shrinkage (damaged/expired/stolen/spillage/etc.)
+//          by the shift it happened under — not just by who filed it, since
+//          the person filing an adjustment and the person whose till was
+//          actually open when the loss occurred aren't always the same.
+//          Only APPROVED adjustments count here: pending ones haven't been
+//          confirmed as real loss yet, and rejected ones were determined
+//          not to be loss at all — including either would overstate shrinkage.
+// @route   GET /api/stock-adjustments/shrinkage-by-shift?branch=&from=&to=
+// @access  Protected — branchManager, admin
+export const getShrinkageByShift = async (req, res, next) => {
+  try {
+    const filter = { status: "approved" };
+    if (req.user.isAdmin) {
+      if (req.query.branch) filter.branch = req.query.branch;
+    } else {
+      filter.branch = req.user.branch; // branchManager locked to own branch
+    }
+    if (req.query.from || req.query.to) {
+      filter.reviewedAt = {};
+      if (req.query.from) filter.reviewedAt.$gte = new Date(req.query.from);
+      if (req.query.to) filter.reviewedAt.$lte = new Date(req.query.to);
+    }
+
+    const rows = await StockAdjustment.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: "$shift", // null groups together every adjustment with no shift attached
+          adjustmentCount: { $sum: 1 },
+          totalQuantity: { $sum: "$quantity" },
+          totalCostImpact: { $sum: { $ifNull: ["$costImpact", 0] } },
+          reasons: { $push: "$reason" },
+        },
+      },
+      { $sort: { totalCostImpact: -1 } },
+    ]);
+
+    const shiftIds = rows.map((r) => r._id).filter(Boolean);
+    const shifts = await Shift.find({ _id: { $in: shiftIds } })
+      .populate("openedBy", "fullName")
+      .populate("closedBy", "fullName")
+      .populate("branch", "name")
+      .lean();
+    const shiftMap = new Map(shifts.map((s) => [String(s._id), s]));
+
+    // Tally up how many times each reason (damaged/expired/stolen/...)
+    // occurred within a group, instead of leaving the raw array for the
+    // frontend to count itself.
+    const summarize = (reasons) =>
+      reasons.reduce((acc, r) => ({ ...acc, [r]: (acc[r] || 0) + 1 }), {});
+
+    const results = rows.map((r) => {
+      const shift = r._id ? shiftMap.get(String(r._id)) : null;
+      return {
+        shiftId: r._id,
+        shift: shift
+          ? {
+              openedBy: shift.openedBy?.fullName || null,
+              closedBy: shift.closedBy?.fullName || null,
+              branchName: shift.branch?.name || null,
+              openedAt: shift.createdAt,
+              closedAt: shift.closedAt,
+              status: shift.status,
+            }
+          : null, // no shift was open when this was filed
+        adjustmentCount: r.adjustmentCount,
+        totalQuantity: r.totalQuantity,
+        totalCostImpact: Math.round(r.totalCostImpact),
+        reasonBreakdown: summarize(r.reasons),
+      };
+    });
+
+    res.json(results);
+  } catch (error) {
+    next(error);
+  }
+};
