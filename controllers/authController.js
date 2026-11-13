@@ -37,6 +37,9 @@ const publicUser = (user) => ({
   jobTitle: user.jobTitle || null,
   branch: user.branch || null,
   selectedBranch: user.selectedBranch || null,
+  dashboardPrefs: {
+    theme: user.dashboardPrefs?.theme || "classic",
+    chartStyle: user.dashboardPrefs?.chartStyle || "line",
 });
 
 // Fuller shape for the admin Users panel — includes status + join date + branch
@@ -764,6 +767,35 @@ export const resetPasswordWithCode = async (req, res, next) => {
 
     logSuccess("auth", "Password reset via token", { userId: user._id });
     res.json({ message: "Password reset successful" });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Save the dashboard theme / chart style for the logged-in user
+// @route   PATCH /api/auth/dashboard-prefs
+// @access  Protected — admin, branchManager
+export const updateDashboardPrefs = async (req, res, next) => {
+  try {
+    const { theme, chartStyle } = req.body;
+    const $set = {};
+    if (theme !== undefined) {
+      if (!["classic", "brand", "mono"].includes(theme)) {
+        return res.status(400).json({ message: "Invalid theme" });
+      }
+      $set["dashboardPrefs.theme"] = theme;
+    }
+    if (chartStyle !== undefined) {
+      if (!["line", "bar"].includes(chartStyle)) {
+        return res.status(400).json({ message: "Invalid chart style" });
+      }
+      $set["dashboardPrefs.chartStyle"] = chartStyle;
+    }
+    if (!Object.keys($set).length) {
+      return res.status(400).json({ message: "Nothing to update" });
+    }
+    const user = await User.findByIdAndUpdate(req.user._id, { $set }, { new: true });
+    res.json({ user: publicUser(user) });
   } catch (error) {
     next(error);
   }
