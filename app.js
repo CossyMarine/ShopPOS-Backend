@@ -38,6 +38,7 @@ import stockCountRoutes from "./routes/stockCountRoutes.js";
 import stockTransferRoutes from "./routes/stockTransferRoutes.js";
 import promotionRoutes from "./routes/promotionRoutes.js";
 import priceScheduleRoutes from "./routes/priceScheduleRoutes.js";
+import reminderRoutes from "./routes/reminderRoutes.js";
 
 dotenv.config();
 
@@ -116,6 +117,7 @@ app.use("/api/stock-counts", stockCountRoutes);
 app.use("/api/stock-transfers", stockTransferRoutes);
 app.use("/api/promotions", promotionRoutes);
 app.use("/api/price-schedules", priceScheduleRoutes);
+app.use("/api/reminders", reminderRoutes);
 
 /* =================================================
    404 + ERROR HANDLING
