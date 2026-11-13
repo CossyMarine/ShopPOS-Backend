@@ -276,5 +276,8 @@ const receiptSchema = new mongoose.Schema(
   }
 );
 
+receiptSchema.index({ status: 1, paidAt: 1, branch: 1 });
+receiptSchema.index({ branch: 1, createdAt: -1 });
+
 export default mongoose.model("Receipt", receiptSchema);
 export { orderItemSchema };
