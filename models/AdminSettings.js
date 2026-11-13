@@ -32,6 +32,14 @@ const adminSettingsSchema = new mongoose.Schema(
     // Singleton lock — only one document ever exists
     key: { type: String, default: "global", unique: true },
 
+        // Store identity & dashboard config — everything the dashboard shows
+    // comes from here, nothing is hardcoded in the frontend.
+    storeName: { type: String, default: "", trim: true },
+    currency: { type: String, default: "KES", trim: true, uppercase: true },
+    timezone: { type: String, default: "Africa/Nairobi" }, // IANA name
+    openHour: { type: Number, default: 8, min: 0, max: 23 },   // first trading hour shown
+    closeHour: { type: Number, default: 21, min: 0, max: 23 }, // last trading hour shown
+
      
     // Manual till shown to customers who pay via "Till" instead of STK
     tillNumber: { type: String, default: null },
