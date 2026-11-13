@@ -46,6 +46,12 @@ const userSchema = new mongoose.Schema(
     branch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch", default: null },
     selectedBranch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch", default: null },
 
+        // Admin dashboard look — saved per user so it survives logout/devices
+    dashboardPrefs: {
+      theme: { type: String, enum: ["classic", "brand", "mono"], default: "classic" }, // green / orange / black&white
+      chartStyle: { type: String, enum: ["line", "bar"], default: "line" },
+    },
+
     // Reward/cashback points balance — only meaningful for role: "customer"
     walletPoints: { type: Number, default: 0 },
 
