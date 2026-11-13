@@ -394,7 +394,7 @@ export const getAnalyticsOverview = async (req, res, next) => {
 // product's *current* average remaining batch cost, then to 0 margin if
 // neither is available — identical logic to revenueController.getDashboardStats
 // so profit figures agree everywhere in the app.
-function costEstimationStages() {
+export function costEstimationStages() {
   return [
     {
       $addFields: {
