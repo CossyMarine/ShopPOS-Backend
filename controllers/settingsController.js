@@ -20,11 +20,23 @@ export const getSettings = async (req, res, next) => {
 // @route   PATCH /api/settings
 // @access  Protected — admin
 export const updateSettings = async (req, res, next) => {
-  const { tillNumber, tillName, whatsappNumber, callNumber, reward, vat, assumeTableNumberCustomer, assumeTableNumberWaiter, allowPrintingDuringPayment } = req.body;
+  const {
+    storeName, currency, timezone, openHour, closeHour,
+    tillNumber, tillName, whatsappNumber, callNumber, reward, vat,
+    assumeTableNumberCustomer, assumeTableNumberWaiter, allowPrintingDuringPayment,
+  } = req.body;
   try {
     logStart("settings", "Updating admin settings", { fields: Object.keys(req.body) });
 
     const settings = await AdminSettings.getSettings();
+    if (storeName !== undefined) settings.storeName = storeName;
+    if (currency !== undefined && currency) settings.currency = currency;
+    if (timezone !== undefined && timezone) settings.timezone = timezone;
+    if (openHour !== undefined) settings.openHour = Number(openHour);
+    if (closeHour !== undefined) settings.closeHour = Number(closeHour);
+    if (settings.closeHour <= settings.openHour) {
+      return res.status(400).json({ message: "Closing hour must be later than opening hour" });
+    }
     if (tillNumber !== undefined) settings.tillNumber = tillNumber;
     if (tillName !== undefined) settings.tillName = tillName;
     if (whatsappNumber !== undefined) settings.whatsappNumber = whatsappNumber;
@@ -49,12 +61,15 @@ export const updateSettings = async (req, res, next) => {
   }
 };
 
+
 export const getPublicSettings = async (req, res, next) => {
   try {
     logStart("settings", "Loading public settings");
     const s = await AdminSettings.getSettings();
     logSuccess("settings", "Public settings loaded");
     res.json({
+      storeName: s.storeName,
+      currency: s.currency,
       tillNumber: s.tillNumber,
       tillName: s.tillName,
       whatsappNumber: s.whatsappNumber,
@@ -68,11 +83,7 @@ export const getPublicSettings = async (req, res, next) => {
         targetPoints: s.reward.targetPoints,
         description: s.reward.description,
       },
-      vat: {
-        enabled: s.vat.enabled,
-        rate: s.vat.rate,
-        priceMode: s.vat.priceMode,
-      },
+      vat: { enabled: s.vat.enabled, rate: s.vat.rate, priceMode: s.vat.priceMode },
     });
   } catch (error) {
     next(error);
