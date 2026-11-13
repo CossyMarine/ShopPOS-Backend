@@ -40,6 +40,7 @@ const publicUser = (user) => ({
   dashboardPrefs: {
     theme: user.dashboardPrefs?.theme || "classic",
     chartStyle: user.dashboardPrefs?.chartStyle || "line",
+  },
 });
 
 // Fuller shape for the admin Users panel — includes status + join date + branch
