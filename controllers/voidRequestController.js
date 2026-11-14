@@ -1,29 +1,11 @@
 // controllers/voidRequestController.js
+import mongoose from "mongoose";
 import Receipt from "../models/Receipt.js";
 import Order from "../models/Order.js";
 import VoidRequest from "../models/VoidRequest.js";
-import Product from "../models/Product.js";
+import { restockItems } from "../utils/productStock.js";
+import { notFound, badRequest } from "../utils/AppError.js";
 import { logStart, logSuccess } from "../utils/requestLogger.js";
-
-// Reverses a FIFO deduction — adds the quantity back as a new batch at the
-// original unit cost where known, so voiding a sale doesn't silently lose
-// stock. `lines` is either the whole receipt (full void) or a subset
-// (partial void).
-const restockItems = async (lines, billId, restockedBy) => {
-  for (const line of lines) {
-    if (!line.productId) continue; // manually-entered fallback line, nothing to restock
-    const product = await Product.findById(line.productId);
-    if (!product) continue;
-    product.batches.push({
-      quantity: line.quantity,
-      costPerUnit: line.unitPrice,
-      expiryDate: null,
-      receivedBy: restockedBy,
-      supplierNote: `Restocked from voided bill ${billId}`,
-    });
-    await product.save();
-  }
-};
 
 // @desc    Get all pending void requests, with receipt + requester populated
 //          (Super Admin can omit ?branch= to see every branch)
@@ -138,10 +120,14 @@ export const approveVoidRequest = async (req, res, next) => {
   const { id } = req.params;
   const reviewedBy = req.user._id;
 
-  const session = await mongoose.startSession();
+  let session;
   let voidRequest, receipt;
 
   try {
+    // Inside the try so a failure here reaches next(error) instead of
+    // becoming an unhandled rejection that leaves the request hanging.
+    session = await mongoose.startSession();
+
     logStart("voidRequest", "Approving void request", { voidRequestId: id, reviewedBy });
 
     await session.withTransaction(async () => {
@@ -156,15 +142,18 @@ export const approveVoidRequest = async (req, res, next) => {
       receipt = await Receipt.findById(voidRequest.receipt).session(session);
       if (!receipt) throw notFound("Receipt");
 
+      const now = new Date();
+      const restockNote = `Restocked from voided bill ${receipt.billId}`;
+
       voidRequest.status = "approved";
       voidRequest.reviewedBy = reviewedBy;
-      voidRequest.reviewedAt = new Date();
+      voidRequest.reviewedAt = now;
       await voidRequest.save({ session });
 
       if (voidRequest.voidType === "partial" && voidRequest.voidItems.length < receipt.items.length) {
         const voidedIndices = new Set(voidRequest.voidItems.map((v) => v.index));
 
-        await restockItems(voidRequest.voidItems, receipt.billId, reviewedBy, { session });
+        await restockItems(voidRequest.voidItems, restockNote, reviewedBy, { session });
 
         const remainingItems = receipt.items.filter((_, idx) => !voidedIndices.has(idx));
         const voidedTotal = voidRequest.voidItems.reduce((sum, v) => sum + v.lineTotal, 0);
@@ -175,6 +164,7 @@ export const approveVoidRequest = async (req, res, next) => {
 
         if (remainingItems.length === 0) {
           receipt.status = "voided";
+          receipt.voidedAt = now;
         } else if (receipt.amountPaid != null) {
           const newAmountPaid = Math.max(0, Number((receipt.amountPaid - voidedTotal).toFixed(2)));
           receipt.amountPaid = newAmountPaid;
@@ -185,12 +175,13 @@ export const approveVoidRequest = async (req, res, next) => {
         await Order.findByIdAndUpdate(receipt.order, { items: remainingItems, subtotal: newSubtotal }, { session });
       } else {
         receipt.status = "voided";
+        receipt.voidedAt = now;
         await receipt.save({ session });
-        await restockItems(receipt.items, receipt.billId, reviewedBy, { session });
+        await restockItems(receipt.items, restockNote, reviewedBy, { session });
       }
     });
   } catch (error) {
-    await session.endSession();
+    if (session) await session.endSession();
     return next(error);
   }
   await session.endSession();
