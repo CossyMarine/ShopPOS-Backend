@@ -204,10 +204,24 @@ export const getDashboard = async (req, res, next) => {
         ...costEstimationStages(),
         { $group: { _id: gid, revenue: { $sum: "$items.lineTotal" }, cost: { $sum: "$lineCost" } } },
       ]),
+      // Payment methods — from the payments[] entries, so a split bill
+      // (cash + M-Pesa STK, etc.) is counted under each method it was paid
+      // with, in the amounts customers actually paid (VAT included).
+      // Receipts with an empty payments[] (older data) fall back to their
+      // single paymentMethod and totalDue.
       Receipt.aggregate([
         { $match: curMatch },
-        { $group: { _id: "$paymentMethod", amount: { $sum: "$subtotal" } } },
-        { $sort: { amount: -1 } },
+        { $facet: {
+          split: [
+            { $match: { "payments.0": { $exists: true } } },
+            { $unwind: "$payments" },
+            { $group: { _id: "$payments.method", amount: { $sum: "$payments.amount" } } },
+          ],
+          legacy: [
+            { $match: { "payments.0": { $exists: false } } },
+            { $group: { _id: "$paymentMethod", amount: { $sum: { $ifNull: ["$totalDue", "$subtotal"] } } } },
+          ],
+        } },
       ]),
       // busiest weekday x hour (ISO: 1 = Monday)
       Receipt.aggregate([
@@ -235,10 +249,20 @@ export const getDashboard = async (req, res, next) => {
       ]),
       Receipt.find({ ...branchMatch })
         .sort({ createdAt: -1 }).limit(8).populate("branch", "name")
-        .select("billId cashierName branch createdAt status subtotal paymentMethod cashAmount tillAmount changeGiven mpesaReceiptNumber paidAt items")
+        .select("billId cashierName branch createdAt status subtotal totalDue vatAmount paymentMethod cashAmount tillAmount changeGiven mpesaReceiptNumber paidAt items")
         .lean(),
+      // Voided today, by when the receipt was voided. voidedAt is stamped at
+      // the moment of voiding; receipts voided before that field existed have
+      // no voidedAt, so they fall back to updatedAt.
       Receipt.aggregate([
-        { $match: { status: "voided", updatedAt: { $gte: todayStart, $lte: todayEnd }, ...branchMatch } },
+        { $match: {
+          status: "voided",
+          $or: [
+            { voidedAt: { $gte: todayStart, $lte: todayEnd } },
+            { voidedAt: null, updatedAt: { $gte: todayStart, $lte: todayEnd } },
+          ],
+          ...branchMatch,
+        } },
         { $group: { _id: null, amount: { $sum: "$subtotal" }, count: { $sum: 1 } } },
       ]),
       VoidRequest.find({ status: "pending" })
@@ -290,6 +314,17 @@ export const getDashboard = async (req, res, next) => {
 
     const revenue = sum(cRev), customers = sum(cCnt), profit = sum(cProfit), lineRev = sum(cLine);
 
+    /* ----- payment methods ----- */
+    const payResult = payRows[0] || { split: [], legacy: [] };
+    const payTotals = new Map();
+    [...payResult.split, ...payResult.legacy].forEach((p) => {
+      const k = p._id || "unknown";
+      payTotals.set(k, (payTotals.get(k) || 0) + (p.amount || 0));
+    });
+    const payments = [...payTotals]
+      .map(([method, amount]) => ({ method, amount: Math.round(amount) }))
+      .sort((a, b) => b.amount - a.amount);
+
     /* ----- heat map ----- */
     const heat = Array.from({ length: 7 }, () => Array(hrs).fill(0));
     heatRows.forEach((r) => { heat[r._id.dow - 1][clamp(r._id.h - open, 0, hrs - 1)] += r.count; });
@@ -324,7 +359,7 @@ export const getDashboard = async (req, res, next) => {
         avgBasket: customers > 0 ? Math.round(revenue / customers) : 0,
       },
       deltas,
-      payments: payRows.map((p) => ({ method: p._id || "unknown", amount: Math.round(p.amount) })),
+      payments,
       heat,
       topItems: topRows.map((i) => ({ productName: i.productName, unitsSold: i.unitsSold, revenue: Math.round(i.revenue) })),
       branches,
