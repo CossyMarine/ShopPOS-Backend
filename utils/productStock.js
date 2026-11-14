@@ -1,5 +1,6 @@
 // utils/productStock.js
 import Product from "../models/Product.js";
+import { badRequest } from "./AppError.js";
 
 // Deducts qtyToSell from the product's oldest batches first (FIFO), and
 // returns exactly what it cost — a quantity-weighted average across however
@@ -24,6 +25,7 @@ import Product from "../models/Product.js";
 // so the order can be flagged for manual stock reconciliation instead of
 // silently vanishing or silently corrupting the count.
 export async function deductStockFIFO(product, qtyToSell, { session, allowNegative = false } = {}) {
+  const available = product.batches.reduce((s, b) => s + b.quantity, 0);
   let remaining = qtyToSell;
   let totalCost = 0;
   product.batches.sort((a, b) => a.receivedAt - b.receivedAt); // oldest first
@@ -39,7 +41,7 @@ export async function deductStockFIFO(product, qtyToSell, { session, allowNegati
   let shortfall = 0;
   if (remaining > 0) {
     if (!allowNegative) {
-      throw new Error(`Insufficient stock for ${product.name}`);
+            throw badRequest(`Only ${available} of ${product.name} left in stock`);
     }
     // Cost the unmet portion at the most recent batch's price if any batches
     // exist at all, otherwise fall back to the product's current sellingPrice
