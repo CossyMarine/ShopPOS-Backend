@@ -256,6 +256,14 @@ const receiptSchema = new mongoose.Schema(
       default: null,
     },
 
+    // When the receipt was voided. Set once, at the moment status becomes
+    // "voided" — unlike updatedAt, later edits never move it. Receipts voided
+    // before this field existed have null here; reports fall back to updatedAt.
+    voidedAt: {
+      type: Date,
+      default: null,
+    },
+
     printedAt: {
       type: Date,
       default: null,
