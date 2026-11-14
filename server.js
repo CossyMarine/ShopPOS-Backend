@@ -58,10 +58,14 @@ const server = http.createServer(app);
 
 /* ========================================
    🔌 SOCKET.IO SETUP
+   Keep this list in sync with ALLOWED_ORIGINS in app.js.
+   No `credentials: true` here on purpose — the sockets don't use cookies,
+   and the client connects with plain io(SOCKET_URL).
 ======================================== */
 const ALLOWED_ORIGINS = [
   "https://shop-pos-frontend-azure.vercel.app",
   "http://localhost:3000", // local dev
+  "http://localhost:5173", // vite dev
 ];
 
 export const io = new Server(server, {
