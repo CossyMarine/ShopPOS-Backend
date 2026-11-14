@@ -114,6 +114,7 @@ export const cancelUnpaidReceipt = async (req, res, next) => {
     await restockItems(receipt.items, `Cancelled before payment — bill ${receipt.billId}`, req.user?._id || null);
 
     receipt.status = "voided";
+    receipt.voidedAt = new Date();
     receipt.voidReason = "Checkout abandoned before payment";
     await receipt.save();
 
