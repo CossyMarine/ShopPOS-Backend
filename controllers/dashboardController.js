@@ -131,7 +131,9 @@ const fill = (rows, P, fields) => {
   return out;
 };
 
-/* ---------- GET /api/analytics/dashboard?range=&branch= ---------- */
+/* ---------- GET /api/analytics/dashboard?range=&branch= ----------
+   Long ranges (year / all) are cached for 30s by responseCache in
+   analyticsRoutes.js; ?fresh=1 bypasses it. */
 export const getDashboard = async (req, res, next) => {
   try {
     const key = RANGES.includes(req.query.range) ? req.query.range : "today";
@@ -325,9 +327,18 @@ export const getDashboard = async (req, res, next) => {
       .map(([method, amount]) => ({ method, amount: Math.round(amount) }))
       .sort((a, b) => b.amount - a.amount);
 
-    /* ----- heat map ----- */
+    /* ----- heat map -----
+       Sales inside opening hours fill the grid. Sales before opening or
+       after closing are NOT squeezed into the first/last column (that made
+       those columns look busier than they were) — they are counted
+       separately in heatOutside and shown as a note under the grid. */
     const heat = Array.from({ length: 7 }, () => Array(hrs).fill(0));
-    heatRows.forEach((r) => { heat[r._id.dow - 1][clamp(r._id.h - open, 0, hrs - 1)] += r.count; });
+    let heatOutside = 0;
+    heatRows.forEach((r) => {
+      const col = r._id.h - open;
+      if (col < 0 || col >= hrs) heatOutside += r.count;
+      else heat[r._id.dow - 1][col] += r.count;
+    });
 
     /* ----- branches ----- */
     let branches = [];
@@ -361,6 +372,7 @@ export const getDashboard = async (req, res, next) => {
       deltas,
       payments,
       heat,
+      heatOutside,
       topItems: topRows.map((i) => ({ productName: i.productName, unitsSold: i.unitsSold, revenue: Math.round(i.revenue) })),
       branches,
       recent,
