@@ -4,8 +4,11 @@ import Receipt from "../models/Receipt.js";
 import Order from "../models/Order.js";
 import VoidRequest from "../models/VoidRequest.js";
 import { restockItems } from "../utils/productStock.js";
+import { buildOrderVat } from "../utils/vat.js";
 import { notFound, badRequest } from "../utils/AppError.js";
 import { logStart, logSuccess } from "../utils/requestLogger.js";
+
+const round2 = (n) => Number(Number(n).toFixed(2));
 
 // @desc    Get all pending void requests, with receipt + requester populated
 //          (Super Admin can omit ?branch= to see every branch)
@@ -113,7 +116,8 @@ export const createVoidRequest = async (req, res, next) => {
 
 // @desc    Approve a void request — voids the whole receipt, or (for a
 //          partial request) removes only the requested line items,
-//          restocks them, and recalculates the bill's subtotal/status.
+//          restocks them, and recalculates the bill's subtotal, VAT, total
+//          due and paid/partial/unpaid status.
 // @route   PATCH /api/void-requests/:id/approve
 // @access  Protected — branchManager, admin
 export const approveVoidRequest = async (req, res, next) => {
@@ -156,23 +160,45 @@ export const approveVoidRequest = async (req, res, next) => {
         await restockItems(voidRequest.voidItems, restockNote, reviewedBy, { session });
 
         const remainingItems = receipt.items.filter((_, idx) => !voidedIndices.has(idx));
-        const voidedTotal = voidRequest.voidItems.reduce((sum, v) => sum + v.lineTotal, 0);
-        const newSubtotal = Number(remainingItems.reduce((sum, i) => sum + i.lineTotal, 0).toFixed(2));
+        const oldTotalDue = receipt.totalDue;
+
+        // Rebuild the totals the same way checkout does, using the VAT
+        // settings stored ON THIS RECEIPT (not today's settings, which may
+        // have changed since the sale). With VAT off this reduces to the
+        // plain sum of the remaining line totals.
+        const vat = buildOrderVat(remainingItems, {
+          enabled: receipt.vatEnabled,
+          rate: receipt.vatRate,
+          priceMode: receipt.priceMode,
+        });
+        const newSubtotal = round2(vat.subtotal);
+        const newVatAmount = round2(vat.vatAmount);
+        const newTotalDue = round2(vat.totalDue);
 
         receipt.items = remainingItems;
         receipt.subtotal = newSubtotal;
+        receipt.vatAmount = newVatAmount;
+        receipt.totalDue = newTotalDue;
 
         if (remainingItems.length === 0) {
           receipt.status = "voided";
           receipt.voidedAt = now;
         } else if (receipt.amountPaid != null) {
-          const newAmountPaid = Math.max(0, Number((receipt.amountPaid - voidedTotal).toFixed(2)));
+          // What the customer owes dropped by the VAT-inclusive value of the
+          // voided lines, so that is what comes off amountPaid — not the raw
+          // line totals, which would leave VAT behind.
+          const reduction = round2(oldTotalDue - newTotalDue);
+          const newAmountPaid = Math.max(0, round2(receipt.amountPaid - reduction));
           receipt.amountPaid = newAmountPaid;
-          receipt.status = newAmountPaid >= newSubtotal ? "paid" : newAmountPaid > 0 ? "partial" : "unpaid";
+          receipt.status = newAmountPaid >= newTotalDue ? "paid" : newAmountPaid > 0 ? "partial" : "unpaid";
         }
 
         await receipt.save({ session });
-        await Order.findByIdAndUpdate(receipt.order, { items: remainingItems, subtotal: newSubtotal }, { session });
+        await Order.findByIdAndUpdate(
+          receipt.order,
+          { items: remainingItems, subtotal: newSubtotal, vatAmount: newVatAmount, totalDue: newTotalDue },
+          { session }
+        );
       } else {
         receipt.status = "voided";
         receipt.voidedAt = now;
