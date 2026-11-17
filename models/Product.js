@@ -1,79 +1,86 @@
 // models/Product.js
 import mongoose from "mongoose";
 
-// One received batch of stock — FIFO selling logic reads oldest batch first.
-// quantity/costPerUnit are ALWAYS in selling-unit ("each") terms, even when
-// the batch was received as cases — receivedAsCases/costPerCase are kept
-// alongside purely as an audit trail of what was actually typed in.
 const batchSchema = new mongoose.Schema(
   {
-    quantity:        { type: Number, required: true }, // remaining, in selling units (each)
-    costPerUnit:     { type: Number, required: true }, // cost per selling unit (each)
-    receivedAsCases: { type: Number, default: null },  // set only if received by the case
-    costPerCase:     { type: Number, default: null },  // cost per case as entered, for display
+    quantity:        { type: Number, required: true },
+    costPerUnit:     { type: Number, required: true },
+    receivedAsCases: { type: Number, default: null },
+    costPerCase:     { type: Number, default: null },
     expiryDate:      { type: Date, default: null },
     receivedAt:      { type: Date, default: Date.now },
-    receivedBy:       { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    receivedBy:      { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     supplierNote:    { type: String, default: "" },
+    // NEW: delivery link + what was actually bought (e.g. 10 Box + 12 pcs)
+    batchNo:         { type: String, default: "" },
+    receipt:         { type: mongoose.Schema.Types.ObjectId, ref: "GoodsReceipt", default: null },
+    boughtAs: [{ _id: false, name: String, qty: Number, unitQty: Number }],
+  },
+  { _id: true }
+);
+
+// A pack = Box, Carton, Sack... qty = how many base units inside.
+const packSchema = new mongoose.Schema(
+  {
+    name:    { type: String, required: true, trim: true },
+    qty:     { type: Number, required: true, min: 2 },
+    barcode: { type: String, trim: true, default: null },
+    price:   { type: Number, default: null, min: 0 }, // selling price per whole pack, null = auto
   },
   { _id: true }
 );
 
 const productSchema = new mongoose.Schema(
   {
-    name:          { type: String, required: true, trim: true },
-    // Unique per branch, not globally — see the compound index below.
-    // Two branches stocking the same real-world item (same barcode on the
-    // bottle) is normal; each gets its own Product document since stock,
-    // batches, and pricing are all branch-scoped. A global unique index
-    // would let only ONE branch in the whole system ever stock that barcode.
-    barcode:       { type: String, trim: true }, // EAN-13/CODE128/QR payload — the EACH barcode
-    category:      { type: String, default: "General", trim: true },
-    vatClass:      { type: String, enum: ["standard", "zero", "exempt"], default: "standard" },
-    unit:          { type: mongoose.Schema.Types.ObjectId, ref: "InventoryUnit", required: true }, // the LOOSE/each unit, e.g. Kilogram
+    name:        { type: String, required: true, trim: true },
+    barcode:     { type: String, trim: true },
+    category:    { type: String, default: "General", trim: true },
+    vatClass:    { type: String, enum: ["standard", "zero", "exempt"], default: "standard" },
+    unit:        { type: mongoose.Schema.Types.ObjectId, ref: "InventoryUnit", required: true },
 
-    // How many selling units ("each") make up one purchase case/sack.
-    // 1 = bought and sold loose, no case conversion (default, backwards compatible).
-    // e.g. a 50kg sack of sugar with unit=Kilogram → packSize: 50
-    packSize:      { type: Number, default: 1, min: 1 },
-    // Display label for the purchase unit when packSize > 1, e.g. "Sack", "Carton", "Crate"
-    caseLabel:     { type: String, default: "Carton", trim: true },
-    // Optional separate barcode printed on the case itself, distinct from the each barcode.
-    // Also scoped per branch by the compound index below, same reasoning as `barcode`.
-    caseBarcode:   { type: String, trim: true, default: null },
+    // NEW
+    packs:        [packSchema],
+    sku:          { type: String, trim: true, default: "" },
+    description:  { type: String, trim: true, default: "" },
+    maxLevel:     { type: Number, default: 0 },
+    reorderQty:   { type: Number, default: 0 },
+    perishable:   { type: Boolean, default: false },
+    allowDecimals:{ type: Boolean, default: null }, // null = guess from unit (kg, l...)
+    supplier:     { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", default: null },
 
-    // Price per loose/each unit — e.g. KES 180 per kg. Always required.
-    sellingPrice:  { type: Number, required: true },
-    // Price for the WHOLE case/sack sold intact — e.g. KES 6,000 for the sack.
-    // Independent of sellingPrice × packSize on purpose: bulk pricing is
-    // rarely a straight multiple (that's the whole point of buying in bulk).
-    // Only meaningful when packSize > 1; null otherwise.
-    casePrice:     { type: Number, default: null },
+    // LEGACY (kept in sync from the largest pack so cashier/transfers keep working)
+    packSize:    { type: Number, default: 1, min: 1 },
+    caseLabel:   { type: String, default: "Carton", trim: true },
+    caseBarcode: { type: String, trim: true, default: null },
+    casePrice:   { type: Number, default: null },
 
-    reorderLevel:  { type: Number, default: 0 },
-
-    // Falls back to product name in the UI when null — matches your mockup
+    sellingPrice: { type: Number, required: true },
+    reorderLevel: { type: Number, default: 0 },
     imageUrl:      { type: String, default: null },
     imagePublicId: { type: String, default: null },
-
-    branch:        { type: mongoose.Schema.Types.ObjectId, ref: "Branch", required: true },
-    batches:       [batchSchema],
-
-    isActive:      { type: Boolean, default: true },
+    branch:  { type: mongoose.Schema.Types.ObjectId, ref: "Branch", required: true },
+    batches: [batchSchema],
+    isActive: { type: Boolean, default: true },
   },
   { timestamps: true }
 );
 
-// Barcode uniqueness is scoped to a branch, not global — see the comment on
-// the `barcode` field above. `sparse: true` means products with no barcode
-// at all (null/undefined) never collide with each other.
 productSchema.index({ branch: 1, barcode: 1 }, { unique: true, sparse: true });
 productSchema.index({ branch: 1, caseBarcode: 1 }, { unique: true, sparse: true });
 
-// Sum of all batch quantities = current stock, always derived, never stale.
-// Guarded because queries that .select() a subset of fields (e.g. the public
-// catalog) omit `batches` entirely — this.batches is undefined there, and
-// toJSON:{virtuals:true} means this getter still runs on every res.json().
+// Products created through the old fields (e.g. by stock transfers) get a pack automatically.
+productSchema.pre("validate", function (next) {
+  if ((!this.packs || this.packs.length === 0) && this.packSize > 1) {
+    this.packs.push({
+      name: this.caseLabel || "Carton",
+      qty: this.packSize,
+      barcode: this.caseBarcode || null,
+      price: this.casePrice ?? null,
+    });
+  }
+  next();
+});
+
 productSchema.virtual("currentStock").get(function () {
   return (this.batches || []).reduce((sum, b) => sum + b.quantity, 0);
 });
