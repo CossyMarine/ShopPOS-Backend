@@ -134,27 +134,28 @@ export const finalizeSale = async ({
       receipt = await generateReceiptForOrder(order, { session, shift: shiftId });
 
       if (cashPayment) {
-        const received = Number(cashPayment.amountPaid);
-        const balanceDue = receipt.totalDue; // full amount — offline sales are never partial
-        const changeGiven = Number((Math.max(received, balanceDue) - balanceDue).toFixed(2));
+  const balanceDue = receipt.totalDue; // full amount — offline sales are never partial
+  // Till leg is what the cashier said went to the till; the rest is cash.
+  // (Older queued sales have no tillAmount, so they stay 100% cash.)
+  const tillLeg = Math.min(Math.max(Number(cashPayment.tillAmount) || 0, 0), balanceDue);
+  const cashLeg = Number((balanceDue - tillLeg).toFixed(2));
+  const received = Number(cashPayment.cashAmount ?? cashPayment.amountPaid) || cashLeg;
+  const changeGiven = cashLeg > 0 ? Number((Math.max(received, cashLeg) - cashLeg).toFixed(2)) : 0;
 
-        receipt.status = "paid";
-        receipt.paymentMethod = "cash";
-        receipt.cashAmount = balanceDue;
-        receipt.tillAmount = 0;
-        receipt.amountPaid = receipt.totalDue;
-        receipt.changeGiven = changeGiven;
-        receipt.paidAt = order.soldAt; // the actual moment of sale, not sync time
-        receipt.payments.push({
-          amount: balanceDue,
-          method: "cash",
-          paidBy: cashierId,
-          paidAt: order.soldAt,
-        });
+  receipt.status = "paid";
+  receipt.paymentMethod = tillLeg > 0 && cashLeg > 0 ? "both" : tillLeg > 0 ? "manual_till" : "cash";
+  receipt.cashAmount = cashLeg;
+  receipt.tillAmount = tillLeg;
+  receipt.amountPaid = receipt.totalDue;
+  receipt.changeGiven = changeGiven;
+  receipt.paidAt = order.soldAt; // the actual moment of sale, not sync time
+  if (cashLeg > 0) receipt.payments.push({ amount: cashLeg, method: "cash", paidBy: cashierId, paidAt: order.soldAt });
+  if (tillLeg > 0) receipt.payments.push({ amount: tillLeg, method: "manual_till", paidBy: cashierId, paidAt: order.soldAt });
 
-        await creditCashback(receipt, balanceDue, { session });
-        await receipt.save({ session });
+  await creditCashback(receipt, balanceDue, { session });
+  await receipt.save({ session });
       }
+      
     });
   } finally {
     await session.endSession();
