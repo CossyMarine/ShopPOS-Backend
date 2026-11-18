@@ -19,7 +19,7 @@ const lineSchema = new mongoose.Schema(
     discount:     Number,
     net:          Number,
     effCost:      Number,   // real landed cost per base unit
-    discounts: [{ _id: false, type: String, val: Number, unit: String, unitName: String, amount: Number }],
+    discounts: [{ _id: false, type: {type :String}, val: Number, unit: String, unitName: String, amount: Number }],
     expiryDate:   Date,
     batchNo:      String,
     newSellingPrice: Number,
