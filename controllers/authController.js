@@ -34,6 +34,7 @@ const publicUser = (user) => ({
   phone: user.phone || null,
   isAdmin: user.isAdmin,
   role: user.role,
+  extraRoles: user.extraRoles || [],
   jobTitle: user.jobTitle || null,
   branch: user.branch || null,
   selectedBranch: user.selectedBranch || null,
@@ -51,6 +52,7 @@ const adminUserView = (user) => ({
   phone: user.phone || null,
   isAdmin: user.isAdmin,
   role: user.role,
+  extraRoles: user.extraRoles || [],
   jobTitle: user.jobTitle || null,
   branch: user.branch || null,
   isActive: user.isActive,
@@ -270,7 +272,10 @@ export const createUser = async (req, res, next) => {
 // @access  Protected
 export const getCashiers = async (req, res, next) => {
   try {
-    const filter = { role: "cashier", isActive: true };
+    const filter = {
+      isActive: true,
+      $or: [{ role: "cashier" }, { extraRoles: "cashier" }],
+    };
     if (!req.user.isAdmin) filter.branch = req.user.branch;
 
     const cashiers = await User.find(filter).select("fullName branch").sort({ fullName: 1 });
@@ -366,10 +371,43 @@ export const updateUserRole = async (req, res, next) => {
       user.jobTitle = role === "staff" ? (jobTitle?.trim() || null) : null;
     }
 
+    // Keep extra roles consistent with the (possibly new) main role
+    user.extraRoles = (user.extraRoles || []).filter((r) => r !== user.role);
+    if (user.isAdmin || !["cashier", "storekeeper"].includes(user.role)) user.extraRoles = [];
+
     await user.save();
 
     logSuccess("auth", "User role updated", { userId: id, newRole: user.isAdmin ? "admin" : user.role });
     res.json({ message: "Role updated successfully", user: adminUserView(user) });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Admin grants/revokes the right to also work as cashier/storekeeper.
+//          The user keeps their own login, so everything they do on the extra
+//          screen is recorded under their own account.
+// @route   PATCH /api/auth/users/:id/extra-roles
+// @access  Admin only
+export const updateExtraRoles = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const requested = Array.isArray(req.body.extraRoles) ? req.body.extraRoles : [];
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (user.isAdmin || !["cashier", "storekeeper"].includes(user.role)) {
+      return res.status(400).json({ message: "Only cashiers and storekeepers can have extra roles" });
+    }
+
+    // Only cashier/storekeeper allowed, never a duplicate of their main role
+    user.extraRoles = [...new Set(requested)].filter(
+      (r) => ["cashier", "storekeeper"].includes(r) && r !== user.role
+    );
+    await user.save();
+
+    logSuccess("auth", "Extra roles updated", { userId: id, extraRoles: user.extraRoles });
+    res.json({ message: "Access updated", user: adminUserView(user) });
   } catch (error) {
     next(error);
   }
