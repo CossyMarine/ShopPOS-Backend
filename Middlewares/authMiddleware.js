@@ -39,6 +39,10 @@ export const protect = async (req, res, next) => {
 // Restrict a route to specific roles.
 // Pass "admin" to require isAdmin === true; pass "kitchen"/"waiter"/"accountant"
 // to require that exact `role`. e.g. authorize("admin", "waiter")
+// True when the user's main role OR any admin-granted extra role matches.
+export const hasRole = (user, role) =>
+  !!user && (user.role === role || (user.extraRoles || []).includes(role));
+
 export const authorize = (...allowedRoles) => {
   return (req, res, next) => {
     if (!req.user) {
@@ -47,7 +51,10 @@ export const authorize = (...allowedRoles) => {
     if (allowedRoles.includes("admin") && req.user.isAdmin) {
       return next();
     }
-    if (allowedRoles.includes(req.user.role)) {
+    if (
+      allowedRoles.includes(req.user.role) ||
+      (req.user.extraRoles || []).some((r) => allowedRoles.includes(r))
+    ) {
       return next();
     }
     return res.status(403).json({ message: "Insufficient permissions" });
