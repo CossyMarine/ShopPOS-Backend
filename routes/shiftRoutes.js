@@ -4,7 +4,6 @@ import {
   openShift, getCurrentShift, addPettyCash, getShiftSummary, closeShift,
   getShiftHistory, openShiftForCashier, getShiftStatusForCashier,getShiftsReport,
 } from "../controllers/shiftController.js";
-import { protect, authorize } from "../Middlewares/authMiddleware.js";
 import { protect, authorize, sameBranch } from "../Middlewares/authMiddleware.js";
 
 const router = express.Router();
