@@ -76,6 +76,14 @@ const userSchema = new mongoose.Schema(
     resetToken: { type: String, select: false },            // short-lived token after code is verified
     resetTokenExpires: { type: Date, select: false },
 
+        // ── Customer Display ──
+    displayPinHash: { type: String, select: false },          // bcrypt, never the password field
+    displayPinFailed: { type: Number, default: 0, select: false },
+    displayPinLockedUntil: { type: Date, default: null, select: false },
+    displaySessionVersion: { type: Number, default: 0 },      // bump = every open Display is kicked out
+    displayTillNumber: { type: String, default: null, trim: true },
+    displayTillName: { type: String, default: null, trim: true },
+
     //Employment date
     employmentStartDate: { type: Date, default: null },
   },
