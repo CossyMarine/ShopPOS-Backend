@@ -8,6 +8,12 @@ import { applyPaymentToReceipt, applyRewardRedemption, findCustomerByIdentifier 
 import { logStart, logSuccess } from "../utils/requestLogger.js";
 import { badRequest, AppError } from "../utils/AppError.js";
 
+// totalDue = what the customer actually owes (VAT included). subtotal is
+// net-of-VAT, so balance math must never use it. Falls back to subtotal for
+// old receipts that predate totalDue.
+const getBalanceDue = (receipt) =>
+  Number(((receipt.totalDue ?? receipt.subtotal) - (receipt.amountPaid || 0)).toFixed(2));
+
 const attachProductImages = async (items) => {
   const names = items.map((i) => i.productName);
   const products = await Product.find({ name: { $in: names } }).select("name imageUrl");
@@ -103,7 +109,7 @@ export const resolveBill = async (req, res, next) => {
     }
 
     const items = await attachProductImages(receipt.items);
-    const balanceDue = Number((receipt.subtotal - (receipt.amountPaid || 0)).toFixed(2));
+    const balanceDue = getBalanceDue(receipt);
 
     logSuccess("wallet", "Bill resolved", { billId, receiptId: receipt._id });
     res.json({
@@ -114,6 +120,7 @@ export const resolveBill = async (req, res, next) => {
       status: receipt.status,
       items,
       subtotal: receipt.subtotal,
+      totalDue: receipt.totalDue ?? receipt.subtotal,
       amountPaid: receipt.amountPaid || 0,
       balanceDue,
       hasPendingManualPayment: (receipt.pendingManualPayments?.length || 0) > 0,
@@ -157,7 +164,7 @@ export const payWithManualTill = async (req, res, next) => {
     }
 
     const amt = parseFloat(amount);
-    const balanceDue = Number((receipt.subtotal - (receipt.amountPaid || 0)).toFixed(2));
+    const balanceDue = getBalanceDue(receipt);
     if (isNaN(amt) || amt <= 0) return res.status(400).json({ message: "Enter a valid amount" });
     if (amt > balanceDue) {
       return res.status(400).json({ message: `Amount exceeds the balance due (KES ${balanceDue})` });
@@ -218,7 +225,7 @@ export const payWithStk = async (req, res, next) => {
     }
 
     const amt = parseFloat(amount);
-    const balanceDue = Number((receipt.subtotal - (receipt.amountPaid || 0)).toFixed(2));
+    const balanceDue = getBalanceDue(receipt);
     if (isNaN(amt) || amt <= 0) return res.status(400).json({ message: "Enter a valid amount" });
     if (amt > balanceDue) {
       return res.status(400).json({ message: `Amount exceeds the balance due (KES ${balanceDue})` });
