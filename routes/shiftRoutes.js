@@ -2,7 +2,7 @@
 import express from "express";
 import {
   openShift, getCurrentShift, addPettyCash, getShiftSummary, closeShift,
-  getShiftHistory, openShiftForCashier, getShiftStatusForCashier,
+  getShiftHistory, openShiftForCashier, getShiftStatusForCashier,getShiftsReport,
 } from "../controllers/shiftController.js";
 import { protect, authorize } from "../Middlewares/authMiddleware.js";
 
@@ -19,4 +19,5 @@ router.get("/cashier/:cashierId/status", protect, authorize("cashier", "branchMa
 
 router.get("/history/:userId", protect, authorize("admin", "branchManager"), getShiftHistory);
 
+router.get("/", protect, authorize("admin", "branchManager"), sameBranch, getShiftsReport);
 export default router;
