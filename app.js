@@ -41,6 +41,7 @@ import priceScheduleRoutes from "./routes/priceScheduleRoutes.js";
 import reminderRoutes from "./routes/reminderRoutes.js";
 import supplierRoutes from "./routes/supplierRoutes.js";
 import goodsReceiptRoutes from "./routes/goodsReceiptRoutes.js";
+import displayRoutes from "./routes/displayRoutes.js";
 
 dotenv.config();
 
@@ -122,6 +123,7 @@ app.use("/api/price-schedules", priceScheduleRoutes);
 app.use("/api/reminders", reminderRoutes);
 app.use("/api/suppliers", supplierRoutes);
 app.use("/api/goods-receipts", goodsReceiptRoutes);
+app.use("/api/display", displayRoutes);
 
 /* =================================================
    404 + ERROR HANDLING
