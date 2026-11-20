@@ -9,6 +9,8 @@ const branchSchema = new mongoose.Schema(
     isActive:  { type: Boolean, default: true },
     isWarehouse: { type: Boolean, default: false },
     manager:   { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    tillNumber: { type: String, default: null, trim: true },
+    tillName:   { type: String, default: null, trim: true },
   },
   { timestamps: true }
 );
