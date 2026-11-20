@@ -103,6 +103,7 @@ export const getStaffOverview = async (req, res, next) => {
         isActive: user.isActive,
         branch: user.branch,
         isAdmin: user.isAdmin,
+        extraRoles: user.extraRoles || [],
         createdAt: user.createdAt,
         employmentStartDate: user.employmentStartDate, // NEW — feeds daily-interval payday counting + AI insight "joined on"
       },
