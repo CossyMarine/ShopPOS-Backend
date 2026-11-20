@@ -1,153 +1,135 @@
-// middlewares/authMiddleware.js
+import mongoose from "mongoose";
+import dotenv from "dotenv";
+import * as Sentry from "@sentry/node";
+import app from "./app.js";
+import http from "http";
+import { Server } from "socket.io";
+import cron from "node-cron";
 import jwt from "jsonwebtoken";
-import User from "../models/User.js";
-import Shift from "../models/Shift.js";
+import { applyDuePriceSchedules } from "./utils/applyScheduledPriceChanges.js";
+import { getDisplayState } from "./utils/displayState.js";
 
-// Protect routes — reads the httpOnly cookie set on login
-export const protect = async (req, res, next) => {
-  const token = req.cookies?.token;
+dotenv.config();
 
-  if (!token) {
-    return res.status(401).json({ message: "Not authorized, no token" });
-  }
+/* ========================================
+   🛡️ SENTRY
+   Must be initialized before the process-level handlers below, so they
+   can report to it, and before anything else runs.
+======================================== */
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+  environment: "production",
+});
 
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET, {
-      algorithms: ["HS256"],
-    });
+/* ========================================
+   🛑 PROCESS-LEVEL SAFETY NETS
+   Must be registered before anything else runs. Without these, a
+   rejected promise or thrown error that nothing catches can silently
+   kill the backend mid-shift with no trace.
+======================================== */
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("❌ Unhandled Rejection at:", promise, "reason:", reason);
+  Sentry.captureException(reason instanceof Error ? reason : new Error(String(reason)));
+  // Logged, not exited — an unhandled rejection alone shouldn't take
+  // down a live POS.
+});
 
-    // A Display token (scoped) can never be used as a dashboard token
-    if (decoded.scope) {
-      return res.status(401).json({ message: "Not authorized, token failed" });
+process.on("uncaughtException", (err) => {
+  console.error("❌ Uncaught Exception:", err);
+  Sentry.captureException(err);
+  // This means a bug escaped every try/catch and every promise handler —
+  // the process state is no longer trustworthy, so exit and let your
+  // process manager (pm2/systemd/Render) restart it clean.
+  process.exit(1);
+});
+
+/* ========================================
+   🗄️ CONNECT TO MONGODB
+======================================== */
+mongoose
+  .connect(process.env.MONGO_URI)
+  .then(() => console.log("✅ MongoDB connected"))
+  .catch((err) => console.log("❌ MongoDB error:", err));
+
+const PORT = process.env.PORT || 5000;
+
+/* ========================================
+   🌐 CREATE HTTP SERVER
+======================================== */
+const server = http.createServer(app);
+
+/* ========================================
+   🔌 SOCKET.IO SETUP
+   Keep this list in sync with ALLOWED_ORIGINS in app.js.
+   No `credentials: true` here on purpose — the sockets don't use cookies,
+   and the client connects with plain io(SOCKET_URL).
+======================================== */
+const ALLOWED_ORIGINS = [
+  "https://shop-pos-frontend-azure.vercel.app",
+  "http://localhost:3000", // local dev
+  "http://localhost:5173", // vite dev
+];
+
+export const io = new Server(server, {
+  cors: {
+    origin: ALLOWED_ORIGINS,
+    methods: ["GET", "POST", "PATCH"],
+  },
+});
+
+/* Make io accessible in routes/controllers via req.app.get("io") */
+app.set("io", io);
+
+/* ========================================
+   ⏰ SCHEDULED PRICE CHANGES
+   Runs every minute — catches any price schedule whose effective time has
+   arrived. getProducts also does a lazy catch-up on every catalog load, so
+   this cron is really just for accuracy when nobody happens to be shopping
+   at the exact minute a price is due to change.
+======================================== */
+cron.schedule("* * * * *", () => {
+  applyDuePriceSchedules(io).catch((err) => {
+    console.error("❌ Failed to apply scheduled price changes:", err);
+    Sentry.captureException(err);
+  });
+});
+
+/* ========================================
+   🔗 SOCKET CONNECTION — ROOMS
+   Rooms let a screen subscribe only to what it needs, e.g. a
+   kitchen display joins "kitchen" instead of hearing every event.
+======================================== */
+io.on("connection", (socket) => {
+  console.log("🔌 New client connected:", socket.id);
+
+  socket.on("join_room", (room) => {
+    if (String(room).startsWith("display:")) return; // display rooms need a ticket
+    socket.join(room);
+  });
+
+  socket.on("display:join", async ({ ticket } = {}) => {
+    try {
+      const d = jwt.verify(ticket, process.env.JWT_SECRET, { algorithms: ["HS256"] });
+      if (d.scope !== "display-socket") throw new Error("scope");
+      socket.join(`display:${d.id}`);
+      socket.emit("display:state", await getDisplayState(d.id));
+    } catch {
+      socket.emit("display:auth_error");
     }
+  });
 
-    const user = await User.findById(decoded.id).select("-password");
+  socket.on("leave_room", (room) => {
+    socket.leave(room);
+  });
 
-    if (!user) {
-      return res.status(401).json({ message: "Not authorized, user not found" });
-    }
+  socket.on("disconnect", () => {
+    console.log("❌ Client disconnected:", socket.id);
+  });
+});
 
-    if (!user.isActive) {
-      return res
-        .status(403)
-        .json({ message: "Your account has been deactivated. Contact your admin." });
-    }
-
-    req.user = user;
-    next();
-  } catch (error) {
-    console.error("Auth middleware error:", error.message);
-    return res.status(401).json({ message: "Not authorized, token failed" });
-  }
-};
-
-// Display sessions: separate cookie, scope-checked, revoked by session version.
-export const protectDisplay = async (req, res, next) => {
-  const token = req.cookies?.displayToken;
-  if (!token) return res.status(401).json({ message: "Display not signed in" });
-  try {
-    const d = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ["HS256"] });
-    if (d.scope !== "display") throw new Error("wrong scope");
-    const user = await User.findById(d.id).select("-password +displayPinHash");
-    if (
-      !user || !user.isActive || !user.displayPinHash ||
-      (user.displaySessionVersion || 0) !== d.v
-    ) {
-      res.clearCookie("displayToken");
-      return res.status(401).json({ message: "Display session ended" });
-    }
-    req.user = user;
-    next();
-  } catch {
-    return res.status(401).json({ message: "Display session ended" });
-  }
-};
-
-// Restrict a route to specific roles.
-// Pass "admin" to require isAdmin === true; pass "kitchen"/"waiter"/"accountant"
-// to require that exact `role`. e.g. authorize("admin", "waiter")
-// True when the user's main role OR any admin-granted extra role matches.
-export const hasRole = (user, role) =>
-  !!user && (user.role === role || (user.extraRoles || []).includes(role));
-
-export const authorize = (...allowedRoles) => {
-  return (req, res, next) => {
-    if (!req.user) {
-      return res.status(403).json({ message: "Insufficient permissions" });
-    }
-    if (allowedRoles.includes("admin") && req.user.isAdmin) {
-      return next();
-    }
-    if (
-      allowedRoles.includes(req.user.role) ||
-      (req.user.extraRoles || []).some((r) => allowedRoles.includes(r))
-    ) {
-      return next();
-    }
-    return res.status(403).json({ message: "Insufficient permissions" });
-  };
-};
-
-// Gate a route behind one of an accountant's toggleable permissions.
-// Admins always pass — permissions only apply to role: "accountant".
-export const requirePermission = (key) => (req, res, next) => {
-  if (!req.user) return res.status(403).json({ message: "Insufficient permissions" });
-  if (req.user.isAdmin) return next();
-  if (req.user.role !== "accountant") return next(); // only accountants are permission-gated
-  if (req.user.permissions?.[key]) return next();
-  return res.status(403).json({ message: "You don't have access to this section" });
-};
-
-// Blocks payment-processing routes unless the accountant has an open shift.
-// Admins aren't shift-gated, but if one has stepped into the Cashier view and
-// opened a shift, it is attached so his sales/payments are recorded against it.
-export const requireOpenShift = async (req, res, next) => {
-  try {
-    const shift = await Shift.findOne({ openedBy: req.user._id, status: "open" });
-    if (req.user?.isAdmin) {
-      if (shift) req.shift = shift;
-      return next();
-    }
-    if (!shift) {
-      return res.status(403).json({ message: "Open your shift before processing payments." });
-    }
-    req.shift = shift; // handy for controllers to stamp receipt.shift
-    next();
-  } catch (error) {
-    res.status(500).json({ message: "Failed to verify shift status", error: error.message });
-  }
-};
-
-// authorize(): "admin" still means isAdmin === true (Super Admin, bypasses branch checks).
-// Pass exact roles otherwise, e.g. authorize("admin", "branchManager", "cashier")
-
-// NEW — restricts a route to the user's own branch.
-// Super Admin bypasses entirely. Everyone else must operate within req.user.branch.
-// Expects the target branch id at req.params.branchId, req.body.branch, or req.query.branch.
-export const sameBranch = (req, res, next) => {
-  if (req.user?.isAdmin) return next();
-
-  // GET requests (and any request with no body) never get req.body populated
-  // by express.json() — it skips parsing entirely when there's no body to read.
-  req.body = req.body || {};
-
-  const targetBranch =
-    req.params.branchId || req.body.branch || req.query.branch;
-
-  if (!req.user.branch) {
-    return res.status(403).json({ message: "Your account has no assigned branch" });
-  }
-
-  // No branch specified on the request = scope automatically to the user's own branch
-  if (!targetBranch) {
-    req.body.branch = String(req.user.branch);
-    req.query.branch = String(req.user.branch);
-    return next();
-  }
-
-  if (String(req.user.branch) !== String(targetBranch)) {
-    return res.status(403).json({ message: "You can only access your own branch" });
-  }
-
-  next();
-};
+/* ========================================
+   🚀 START SERVER
+======================================== */
+server.listen(PORT, () =>
+  console.log(`🚀 Server running on port ${PORT}`)
+);
