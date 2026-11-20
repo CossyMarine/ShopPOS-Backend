@@ -37,6 +37,14 @@ const userSchema = new mongoose.Schema(
       default: "customer",
     },
 
+    // Extra screens this staff member may also work in (admin-toggleable).
+    // Everything they do there is recorded under their OWN account.
+    extraRoles: {
+      type: [String],
+      enum: ["cashier", "storekeeper"],
+      default: [],
+    },
+
     jobTitle: { type: String, default: null },
 
     isActive: { type: Boolean, default: true },
