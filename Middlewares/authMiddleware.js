@@ -65,11 +65,15 @@ export const requirePermission = (key) => (req, res, next) => {
 };
 
 // Blocks payment-processing routes unless the accountant has an open shift.
-// Admins bypass this — they aren't shift-gated.
+// Admins aren't shift-gated, but if one has stepped into the Cashier view and
+// opened a shift, it is attached so his sales/payments are recorded against it.
 export const requireOpenShift = async (req, res, next) => {
-  if (req.user?.isAdmin) return next();
   try {
     const shift = await Shift.findOne({ openedBy: req.user._id, status: "open" });
+    if (req.user?.isAdmin) {
+      if (shift) req.shift = shift;
+      return next();
+    }
     if (!shift) {
       return res.status(403).json({ message: "Open your shift before processing payments." });
     }
