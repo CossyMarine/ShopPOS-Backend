@@ -6,6 +6,7 @@ import VoidRequest from "../models/VoidRequest.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
 import { logStart, logSuccess } from "../utils/requestLogger.js";
+import { hasRole } from "../Middlewares/authMiddleware.js";
 
 // @desc    Open a shift for the logged-in user. No cash float is asked for.
 // @route   POST /api/shifts/open
@@ -83,7 +84,7 @@ export const addPettyCash = async (req, res, next) => {
       console.warn(`[shift] ⚠️ Shift not found: ${id}`);
       return res.status(404).json({ message: "Shift not found" });
     }
-    if (!req.user.isAdmin && req.user.role !== "cashier" && String(shift.openedBy) !== String(req.user._id)) {
+    if (!req.user.isAdmin && !hasRole(req.user, "cashier") && String(shift.openedBy) !== String(req.user._id)) {
       console.warn(`[shift] ⚠️ Ownership mismatch on shift ${id}`);
       return res.status(403).json({ message: "This isn't your shift" });
     }
@@ -182,7 +183,7 @@ export const getShiftSummary = async (req, res, next) => {
       console.warn(`[shift] ⚠️ Shift not found: ${id}`);
       return res.status(404).json({ message: "Shift not found" });
     }
-    if (!req.user.isAdmin && req.user.role !== "cashier" && String(shift.openedBy) !== String(req.user._id)) {
+    if (!req.user.isAdmin && !hasRole(req.user, "cashier") && String(shift.openedBy) !== String(req.user._id)) {
       console.warn(`[shift] ⚠️ Ownership mismatch on shift ${id}`);
       return res.status(403).json({ message: "This isn't your shift" });
     }
@@ -214,7 +215,7 @@ export const closeShift = async (req, res, next) => {
       console.warn(`[shift] ⚠️ Shift not found: ${id}`);
       return res.status(404).json({ message: "Shift not found" });
     }
-    if (!req.user.isAdmin && req.user.role !== "cashier" && String(shift.openedBy) !== String(req.user._id)) {
+    if (!req.user.isAdmin && !hasRole(req.user, "cashier") && String(shift.openedBy) !== String(req.user._id)) {
       console.warn(`[shift] ⚠️ Ownership mismatch on shift ${id}`);
       return res.status(403).json({ message: "This isn't your shift" });
     }
