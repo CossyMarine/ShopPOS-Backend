@@ -2,6 +2,7 @@
 import Branch from "../models/Branch.js";
 import User from "../models/User.js";
 import { logStart, logSuccess } from "../utils/requestLogger.js";
+import { refreshTills } from "../utils/displayState.js";
 
 // @desc    List all branches — this is the "view all branches" screen for Super Admin
 // @route   GET /api/branches
@@ -39,21 +40,28 @@ export const createBranch = async (req, res, next) => {
   }
 };
 
-// @desc    Update branch details (name, address, tax rate, active status)
+// @desc    Update branch details (name, address, tax rate, active status, till)
 // @route   PUT /api/branches/:id
 // @access  Protected — admin only
 export const updateBranch = async (req, res, next) => {
   try {
-    const allowed = ["name", "address", "taxRate", "isActive", "isWarehouse"];
+    const allowed = ["name", "address", "taxRate", "isActive", "isWarehouse", "tillNumber", "tillName"];
     const updates = {};
     allowed.forEach((key) => { if (req.body[key] !== undefined) updates[key] = req.body[key]; });
 
     logStart("branch", "Updating branch", { branchId: req.params.id, updates });
 
+    // Normalise empty strings for till fields
+    ["tillNumber", "tillName"].forEach((k) => { if (k in updates) updates[k] = String(updates[k] ?? "").trim() || null; });
+
     const branch = await Branch.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true });
     if (!branch) {
       console.warn(`[branch] ⚠️ Branch not found: ${req.params.id}`);
       return res.status(404).json({ message: "Branch not found" });
+    }
+
+    if (updates.tillNumber !== undefined || updates.tillName !== undefined) {
+      refreshTills(req.app.get("io"), { branch: branch._id }).catch(() => {});
     }
 
     logSuccess("branch", "Branch updated", { branchId: branch._id });
