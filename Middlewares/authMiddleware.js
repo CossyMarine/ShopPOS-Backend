@@ -16,6 +16,11 @@ export const protect = async (req, res, next) => {
       algorithms: ["HS256"],
     });
 
+    // A Display token (scoped) can never be used as a dashboard token
+    if (decoded.scope) {
+      return res.status(401).json({ message: "Not authorized, token failed" });
+    }
+
     const user = await User.findById(decoded.id).select("-password");
 
     if (!user) {
@@ -33,6 +38,28 @@ export const protect = async (req, res, next) => {
   } catch (error) {
     console.error("Auth middleware error:", error.message);
     return res.status(401).json({ message: "Not authorized, token failed" });
+  }
+};
+
+// Display sessions: separate cookie, scope-checked, revoked by session version.
+export const protectDisplay = async (req, res, next) => {
+  const token = req.cookies?.displayToken;
+  if (!token) return res.status(401).json({ message: "Display not signed in" });
+  try {
+    const d = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ["HS256"] });
+    if (d.scope !== "display") throw new Error("wrong scope");
+    const user = await User.findById(d.id).select("-password +displayPinHash");
+    if (
+      !user || !user.isActive || !user.displayPinHash ||
+      (user.displaySessionVersion || 0) !== d.v
+    ) {
+      res.clearCookie("displayToken");
+      return res.status(401).json({ message: "Display session ended" });
+    }
+    req.user = user;
+    next();
+  } catch {
+    return res.status(401).json({ message: "Display session ended" });
   }
 };
 
