@@ -13,8 +13,16 @@ import { logStart, logSuccess } from "../utils/requestLogger.js";
 export const openShift = async (req, res, next) => {
   const openedBy = req.user._id;
 
-  if (!req.user.branch) {
-    return res.status(400).json({ message: "Your account has no assigned branch" });
+  // Staff work in their assigned branch. A Super Admin has no fixed branch —
+  // when he steps into the Cashier view he works in the branch he has selected.
+  const branch = req.user.branch || (req.user.isAdmin ? req.user.selectedBranch : null);
+
+  if (!branch) {
+    return res.status(400).json({
+      message: req.user.isAdmin
+        ? "Select a branch before opening a shift"
+        : "Your account has no assigned branch",
+    });
   }
 
   try {
@@ -26,7 +34,7 @@ export const openShift = async (req, res, next) => {
       return res.status(400).json({ message: "You already have a shift open", shift: existing });
     }
 
-    const shift = await Shift.create({ openedBy, branch: req.user.branch });
+    const shift = await Shift.create({ openedBy, branch });
 
     const io = req.app.get("io");
     io.to(`branch:${shift.branch}`).emit("shift:opened", shift);
