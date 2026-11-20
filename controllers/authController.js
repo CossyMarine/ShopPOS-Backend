@@ -6,8 +6,15 @@ import crypto from "crypto";
 import sendResetEmail from "../utils/sendResetEmail.js";
 import { sendResetCode } from "../utils/sendResetSms.js";
 import { logStart, logSuccess, logError } from "../utils/requestLogger.js";
+import { PIN_RE, canUseDisplay, isPinLocked, registerPinFailure, clearPinFailures } from "../utils/displayPin.js";
 
 // ======================= HELPERS =======================
+const generateDisplayToken = (user) =>
+  jwt.sign(
+    { id: user._id, scope: "display", v: user.displaySessionVersion || 0 },
+    process.env.JWT_SECRET,
+    { expiresIn: "30d" }
+  );
 
 const generateToken = (user) => {
   return jwt.sign(
@@ -79,43 +86,51 @@ const STAFF_ROLES_LABEL = "cashier, storekeeper, branchManager, or staff";
 export const login = async (req, res, next) => {
   try {
     let { identifier, password } = req.body;
-
     if (!identifier || !password) {
       return res.status(400).json({ message: "Enter your email/phone and password" });
     }
-
     identifier = identifier.trim();
     const value = identifier.toLowerCase();
-
     logStart("auth", "Login attempt", { identifier });
 
-    const user = await User.findOne({
-      $or: [{ email: value }, { phone: identifier }],
-    });
+    const user = await User.findOne({ $or: [{ email: value }, { phone: identifier }] })
+      .select("+displayPinHash +displayPinFailed +displayPinLockedUntil");
 
-    if (!user) {
-      console.warn(`[auth] ⚠️ Login failed — no account for "${identifier}"`);
-      return res.status(401).json({ message: "Invalid credentials" });
-    }
+    if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
+    // 1) PASSWORD FIRST — Dashboard always wins
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      console.warn(`[auth] ⚠️ Login failed — wrong password for user ${user._id}`);
+    if (isMatch) {
+      if (!user.isActive) {
+        return res.status(403).json({ message: "Your account has been deactivated. Contact your admin." });
+      }
+      res.cookie("token", generateToken(user), getCookieOptions());
+      logSuccess("auth", "Login successful", { userId: user._id, role: user.role });
+      return res.json({ mode: "dashboard", user: publicUser(user) });
+    }
+
+    // 2) Not the password → maybe the Display PIN
+    const pinPossible = PIN_RE.test(password) && user.displayPinHash && canUseDisplay(user);
+    if (!pinPossible) return res.status(401).json({ message: "Invalid credentials" });
+
+    if (isPinLocked(user)) {
+      return res.status(429).json({ message: "Too many attempts. Try again in a few minutes." });
+    }
+    if (!(await bcrypt.compare(password, user.displayPinHash))) {
+      await registerPinFailure(user._id);
       return res.status(401).json({ message: "Invalid credentials" });
     }
-
     if (!user.isActive) {
-      console.warn(`[auth] ⚠️ Login blocked — account ${user._id} is deactivated`);
-      return res.status(403).json({
-        message: "Your account has been deactivated. Contact your admin.",
-      });
+      return res.status(403).json({ message: "Your account has been deactivated. Contact your admin." });
     }
 
-    const token = generateToken(user);
-    res.cookie("token", token, getCookieOptions());
-
-    logSuccess("auth", "Login successful", { userId: user._id, role: user.role, isAdmin: user.isAdmin });
-    res.json({ user: publicUser(user) });
+    await clearPinFailures(user._id);
+    res.cookie("displayToken", generateDisplayToken(user), {
+      ...getCookieOptions(),
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
+    logSuccess("auth", "Display login", { userId: user._id });
+    res.json({ mode: "display", user: { fullName: user.fullName } });
   } catch (error) {
     next(error);
   }
