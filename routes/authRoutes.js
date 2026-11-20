@@ -13,6 +13,7 @@ import {
   getAllUsersIncludingCustomers,
   getStaffCount,
   updateUserRole,
+  updateExtraRoles,
   toggleUserStatus,
   updateMe,
   updateSelectedBranch,
@@ -75,6 +76,7 @@ router.get("/users", protect, authorize("admin", "branchManager"), getAllUsers);
 router.get("/users/all", protect, authorize("admin", "branchManager"), getAllUsersIncludingCustomers);
 router.get("/staff-count", protect, authorize("admin", "branchManager"), getStaffCount);
 router.patch("/users/:id/role", protect, authorize("admin"), updateUserRole);
+router.patch("/users/:id/extra-roles", protect, authorize("admin"), updateExtraRoles);
 router.patch("/users/:id/status", protect, authorize("admin"), toggleUserStatus);
 
 export default router;
