@@ -1,6 +1,7 @@
 // controllers/settingsController.js
 import AdminSettings from "../models/AdminSettings.js";
 import { logStart, logSuccess } from "../utils/requestLogger.js";
+import { refreshTills } from "../utils/displayState.js";
 
 // @desc    Get full admin settings
 // @route   GET /api/settings
@@ -53,6 +54,10 @@ export const updateSettings = async (req, res, next) => {
       settings.vat = { ...current, ...vat };
     }
     await settings.save();
+
+    if (tillNumber !== undefined || tillName !== undefined) {
+      refreshTills(req.app.get("io")).catch(() => {});
+    }
 
     logSuccess("settings", "Admin settings updated");
     res.json(settings);
