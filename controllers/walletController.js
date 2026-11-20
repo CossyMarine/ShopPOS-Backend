@@ -7,6 +7,7 @@ import { stkPush } from "../utils/mpesa.js";
 import { applyPaymentToReceipt, applyRewardRedemption, findCustomerByIdentifier } from "../utils/walletPayments.js";
 import { logStart, logSuccess } from "../utils/requestLogger.js";
 import { badRequest, AppError } from "../utils/AppError.js";
+import { hasRole } from "../Middlewares/authMiddleware.js";
 
 // totalDue = what the customer actually owes (VAT included). subtotal is
 // net-of-VAT, so balance math must never use it. Falls back to subtotal for
@@ -146,7 +147,7 @@ export const payWithManualTill = async (req, res, next) => {
 
   if (!receiptId || !amount) return res.status(400).json({ message: "Bill and amount are required" });
 
-  const isStaff = req.user.isAdmin || ["branchManager", "cashier"].includes(req.user.role);
+  const isStaff = req.user.isAdmin || req.user.role === "branchManager" || hasRole(req.user, "cashier");
 
   // Only customers self-servicing from the wallet need to prove the payment —
   // staff entering it from the register have already confirmed it in person.
