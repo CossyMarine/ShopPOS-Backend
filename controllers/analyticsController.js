@@ -8,6 +8,11 @@
 // Reuses the same costPriceAtSale-first / batch-cost-fallback profit logic
 // already established in revenueController.getDashboardStats, so numbers
 // stay consistent across the app.
+//
+// VAT: the breakdowns (overview, category margin) always work on the
+// before-VAT amount (lineNet). When VAT is off that is just lineTotal, so
+// nothing changes. /analytics/vat gives the full VAT picture, and only
+// answers when the VAT switch is on in Admin Settings.
 
 import mongoose from "mongoose";
 import Receipt from "../models/Receipt.js";
@@ -15,10 +20,13 @@ import Product from "../models/Product.js";
 import Branch from "../models/Branch.js";
 import Payslip from "../models/Payslip.js";
 import WageProfile from "../models/WageProfile.js";
+import AdminSettings from "../models/AdminSettings.js"; // VAT
+import GoodsReceipt from "../models/GoodsReceipt.js"; // VAT
 import { getKenyanDate, getKenyanDayBounds } from "../utils/dateHelpers.js";
 import { estimateMonthlyGross } from "./payrollController.js";
 import { logStart, logSuccess } from "../utils/requestLogger.js";
 import { badRequest } from "../utils/AppError.js";
+import { vatLineStages, salesStages, OFF_PERIOD_PRICE_BASIS } from "../utils/vatReport.js"; // VAT
 
 const { ObjectId } = mongoose.Types;
 
@@ -88,6 +96,10 @@ export const getAnalyticsOverview = async (req, res, next) => {
     const { start, end } = resolveAnalyticsRange(range, from, to);
     const branchMatch = branch ? { branch: new ObjectId(branch) } : {};
 
+    // VAT: lineNet / lineVat / linePaid for every line (lineNet = lineTotal when VAT is off)
+    const vatCfg = (await AdminSettings.getSettings()).vat || {};
+    const sales = salesStages(!!vatCfg.enabled, vatCfg.rate);
+
     const paidMatch = {
       status: "paid",
       paidAt: { $gte: start, $lte: end },
@@ -115,10 +127,11 @@ export const getAnalyticsOverview = async (req, res, next) => {
         },
         { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
         ...costEstimationStages(),
+        ...sales, // VAT
         {
           $group: {
             _id: null,
-            revenue: { $sum: "$items.lineTotal" },
+            revenue: { $sum: "$lineNet" }, // VAT: was $items.lineTotal
             cost: { $sum: "$lineCost" },
             unitsSold: { $sum: "$items.quantity" },
           },
@@ -134,6 +147,7 @@ export const getAnalyticsOverview = async (req, res, next) => {
         },
         { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
         ...costEstimationStages(),
+        ...sales, // VAT
         {
           $group: {
             _id: {
@@ -141,7 +155,7 @@ export const getAnalyticsOverview = async (req, res, next) => {
               m: { $month: { date: "$paidAt", timezone: "Africa/Nairobi" } },
               d: { $dayOfMonth: { date: "$paidAt", timezone: "Africa/Nairobi" } },
             },
-            revenue: { $sum: "$items.lineTotal" },
+            revenue: { $sum: "$lineNet" }, // VAT: was $items.lineTotal
             cost: { $sum: "$lineCost" },
           },
         },
@@ -152,12 +166,13 @@ export const getAnalyticsOverview = async (req, res, next) => {
       Receipt.aggregate([
         { $match: paidMatch },
         { $unwind: "$items" },
+        ...sales, // VAT
         {
           $group: {
             _id: { $ifNull: ["$items.productId", "$items.productName"] },
             productName: { $first: "$items.productName" },
             unitsSold: { $sum: "$items.quantity" },
-            revenue: { $sum: "$items.lineTotal" },
+            revenue: { $sum: "$lineNet" }, // VAT: was $items.lineTotal
           },
         },
         { $sort: { revenue: -1 } },
@@ -187,10 +202,11 @@ export const getAnalyticsOverview = async (req, res, next) => {
         },
         { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
         ...costEstimationStages(),
+        ...sales, // VAT
         {
           $group: {
             _id: "$branch",
-            revenue: { $sum: "$items.lineTotal" },
+            revenue: { $sum: "$lineNet" }, // VAT: was $items.lineTotal
             cost: { $sum: "$lineCost" },
             receiptIds: { $addToSet: "$_id" },
           },
@@ -258,7 +274,7 @@ export const getAnalyticsOverview = async (req, res, next) => {
     const totalProfit = Math.round((totals.revenue || 0) - (totals.cost || 0));
 
     // ---- Profit trend (zigzag chart) ----
-    const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const profitTrend = dailyProfitAgg.map((d) => ({
       date: `${d._id.y}-${String(d._id.m).padStart(2, "0")}-${String(d._id.d).padStart(2, "0")}`,
       label: `${d._id.d} ${monthNames[d._id.m - 1]}`,
@@ -435,11 +451,7 @@ export function costEstimationStages() {
       },
     },
   ];
-    }
-
-// --- Add these two exports to controllers/analyticsController.js ---
-// (reuses resolveAnalyticsRange, costEstimationStages, and the ObjectId
-//  destructure already at the top of the file — no new imports needed)
+}
 
 // ---------------------------------------------------------------------
 // GET /api/analytics/category-margin?branch=&range=today|last_7_days|last_30_days|year|custom&from=&to=
@@ -456,6 +468,10 @@ export const getCategoryMargin = async (req, res, next) => {
     const { start, end } = resolveAnalyticsRange(range, from, to);
     const branchMatch = branch ? { branch: new ObjectId(branch) } : {};
 
+    // VAT: margin is always worked out on the before-VAT amount
+    const vatCfg = (await AdminSettings.getSettings()).vat || {};
+    const sales = salesStages(!!vatCfg.enabled, vatCfg.rate);
+
     const paidMatch = {
       status: "paid",
       paidAt: { $gte: start, $lte: end },
@@ -468,10 +484,11 @@ export const getCategoryMargin = async (req, res, next) => {
       { $lookup: { from: "products", localField: "items.productId", foreignField: "_id", as: "product" } },
       { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
       ...costEstimationStages(),
+      ...sales, // VAT
       {
         $group: {
           _id: { $ifNull: ["$product.category", "Uncategorized"] },
-          revenue: { $sum: "$items.lineTotal" },
+          revenue: { $sum: "$lineNet" }, // VAT: was $items.lineTotal
           cost: { $sum: "$lineCost" },
           unitsSold: { $sum: "$items.quantity" },
         },
@@ -584,6 +601,131 @@ export const getDeadStock = async (req, res, next) => {
 
     logSuccess("analytics", "Dead stock report loaded", { count: items.length, totalValueTiedUp });
     res.json({ thresholdDays, items, totalValueTiedUp });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ---------------------------------------------------------------------
+// GET /api/analytics/vat?branch=&range=&from=&to=
+// VAT switch OFF in Admin Settings -> { enabled: false } and nothing else.
+// VAT switch ON -> full VAT detail for the whole range, including sales
+// made while the switch was off (their VAT split is worked out from the
+// item prices, see utils/vatReport.js).
+// ---------------------------------------------------------------------
+export const getVatReport = async (req, res, next) => {
+  try {
+    const { branch, range = "today", from, to } = req.query;
+    const settings = await AdminSettings.getSettings();
+    const vat = settings.vat || {};
+    if (!vat.enabled) return res.json({ enabled: false });
+
+    logStart("analytics", "Loading VAT report", { branch: branch || "all", range });
+    const { start, end } = resolveAnalyticsRange(range, from, to);
+    const branchMatch = branch ? { branch: new ObjectId(branch) } : {};
+    const paidMatch = { status: "paid", paidAt: { $gte: start, $lte: end }, ...branchMatch };
+
+    const sums = {
+      net: { $sum: "$lineNet" },
+      vat: { $sum: "$lineVat" },
+      paid: { $sum: "$linePaid" },
+      cost: { $sum: "$lineCost" },
+      derivedVat: { $sum: { $cond: ["$_derived", "$lineVat", 0] } },
+    };
+
+    const [rows, coverageAgg, inputAgg] = await Promise.all([
+      Receipt.aggregate([
+        { $match: paidMatch },
+        { $unwind: "$items" },
+        { $lookup: { from: "products", localField: "items.productId", foreignField: "_id", as: "product" } },
+        { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
+        ...costEstimationStages(),
+        ...vatLineStages(vat.rate),
+        {
+          $group: {
+            _id: {
+              y: { $year: { date: "$paidAt", timezone: "Africa/Nairobi" } },
+              m: { $month: { date: "$paidAt", timezone: "Africa/Nairobi" } },
+              d: { $dayOfMonth: { date: "$paidAt", timezone: "Africa/Nairobi" } },
+              cls: { $ifNull: ["$items.vatClass", "standard"] },
+            },
+            ...sums,
+          },
+        },
+      ]),
+      // How many receipts used a real VAT snapshot vs a derived split
+      Receipt.aggregate([
+        { $match: paidMatch },
+        {
+          $group: {
+            _id: { $ifNull: ["$vatEnabled", false] },
+            receipts: { $sum: 1 },
+            first: { $min: "$paidAt" },
+            last: { $max: "$paidAt" },
+          },
+        },
+      ]),
+      // VAT paid to suppliers on deliveries (claimable vs not)
+      GoodsReceipt.aggregate([
+        { $match: { "vat.on": true, deliveryDate: { $gte: start, $lte: end }, ...branchMatch } },
+        {
+          $group: {
+            _id: null,
+            claimable: { $sum: { $cond: ["$vat.notRecoverable", 0, "$totals.vat"] } },
+            notClaimable: { $sum: { $cond: ["$vat.notRecoverable", "$totals.vat", 0] } },
+          },
+        },
+      ]),
+    ]);
+
+    // Fold the (day x class) rows into totals, per-day and per-class
+    const add = (o, r) => {
+      o.net += r.net; o.vat += r.vat; o.paid += r.paid; o.cost += r.cost; o.derivedVat += r.derivedVat;
+      return o;
+    };
+    const zero = () => ({ net: 0, vat: 0, paid: 0, cost: 0, derivedVat: 0 });
+    const rd = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Math.round(v)]));
+    const pad = (n) => String(n).padStart(2, "0");
+
+    const totals = zero();
+    const dayMap = {};
+    const classMap = {};
+    rows.forEach((r) => {
+      const date = `${r._id.y}-${pad(r._id.m)}-${pad(r._id.d)}`;
+      add(totals, r);
+      add((dayMap[date] ||= zero()), r);
+      add((classMap[r._id.cls] ||= zero()), r);
+    });
+
+    const input = inputAgg[0] || { claimable: 0, notClaimable: 0 };
+    const cov = (flag) => {
+      const c = coverageAgg.find((x) => x._id === flag);
+      return { receipts: c?.receipts || 0, from: c?.first || null, to: c?.last || null };
+    };
+
+    res.json({
+      enabled: true,
+      rate: vat.rate,
+      priceMode: vat.priceMode,
+      totals: {
+        ...rd(totals),
+        profitExVat: Math.round(totals.net - totals.cost),
+        profitInclVat: Math.round(totals.paid - totals.cost),
+        claimable: Math.round(input.claimable),
+        notClaimable: Math.round(input.notClaimable),
+        payable: Math.round(totals.vat - input.claimable),
+      },
+      daily: Object.entries(dayMap)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([date, v]) => ({ date, ...rd(v) })),
+      byClass: Object.entries(classMap).map(([vatClass, v]) => ({ vatClass, ...rd(v) })),
+      coverage: {
+        recorded: cov(true), // sold with VAT on: real snapshot
+        derived: cov(false), // sold with VAT off: split worked out afterwards
+        derivedBasis: OFF_PERIOD_PRICE_BASIS,
+      },
+    });
+    logSuccess("analytics", "VAT report loaded");
   } catch (error) {
     next(error);
   }
