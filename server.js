@@ -5,7 +5,9 @@ import app from "./app.js";
 import http from "http";
 import { Server } from "socket.io";
 import cron from "node-cron";
+import jwt from "jsonwebtoken";
 import { applyDuePriceSchedules } from "./utils/applyScheduledPriceChanges.js";
+import { getDisplayState } from "./utils/displayState.js";
 
 dotenv.config();
 
@@ -96,12 +98,28 @@ cron.schedule("* * * * *", () => {
    🔗 SOCKET CONNECTION — ROOMS
    Rooms let a screen subscribe only to what it needs, e.g. a
    kitchen display joins "kitchen" instead of hearing every event.
+
+   Customer Display rooms ("display:<cashierId>") are NOT joinable via
+   join_room — they need a short-lived ticket issued to a signed-in
+   Display (GET /api/display/socket-ticket).
 ======================================== */
 io.on("connection", (socket) => {
   console.log("🔌 New client connected:", socket.id);
 
   socket.on("join_room", (room) => {
+    if (String(room).startsWith("display:")) return; // display rooms need a ticket
     socket.join(room);
+  });
+
+  socket.on("display:join", async ({ ticket } = {}) => {
+    try {
+      const d = jwt.verify(ticket, process.env.JWT_SECRET, { algorithms: ["HS256"] });
+      if (d.scope !== "display-socket") throw new Error("wrong scope");
+      socket.join(`display:${d.id}`);
+      socket.emit("display:state", await getDisplayState(d.id));
+    } catch {
+      socket.emit("display:auth_error");
+    }
   });
 
   socket.on("leave_room", (room) => {
