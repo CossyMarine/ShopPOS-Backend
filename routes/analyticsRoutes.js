@@ -5,6 +5,7 @@ import { protect, authorize, sameBranch } from "../Middlewares/authMiddleware.js
 import { responseCache } from "../Middlewares/responseCache.js";
 import { getAnalyticsOverview, getCategoryMargin, getDeadStock } from "../controllers/analyticsController.js";
 import { getDashboard } from "../controllers/dashboardController.js";
+import { getCosts, getDayReport, getTill, getStaff, getAudit } from "../controllers/analyticsOpsController.js";
 
 const router = express.Router();
 
@@ -58,5 +59,11 @@ router.get(
   getCategoryMargin
 );
 router.get("/dead-stock", validBranch, sameBranch, getDeadStock);
+
+router.get("/costs", validBranch, sameBranch, getCosts);
+router.get("/day", validBranch, sameBranch, getDayReport);
+router.get("/till", validBranch, sameBranch, getTill);
+router.get("/staff", validBranch, sameBranch, getStaff);
+router.get("/audit", validBranch, sameBranch, getAudit);
 
 export default router;
