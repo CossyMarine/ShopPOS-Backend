@@ -3,7 +3,7 @@ import express from "express";
 import mongoose from "mongoose";
 import { protect, authorize, sameBranch } from "../Middlewares/authMiddleware.js";
 import { responseCache } from "../Middlewares/responseCache.js";
-import { getAnalyticsOverview, getCategoryMargin, getDeadStock } from "../controllers/analyticsController.js";
+import { getAnalyticsOverview, getCategoryMargin, getDeadStock, getVatReport } from "../controllers/analyticsController.js";
 import { getDashboard } from "../controllers/dashboardController.js";
 import { getCosts, getDayReport, getTill, getStaff, getAudit } from "../controllers/analyticsOpsController.js";
 
@@ -60,6 +60,11 @@ router.get(
 );
 router.get("/dead-stock", validBranch, sameBranch, getDeadStock);
 
+/* VAT detail. Not cached, so flipping the VAT switch in Admin Settings
+   takes effect on the next load. Answers { enabled: false } when it is off. */
+router.get("/vat", validBranch, sameBranch, getVatReport);
+
+/* Losses, petty cash, day report, till check, staff accountability, audit trail */
 router.get("/costs", validBranch, sameBranch, getCosts);
 router.get("/day", validBranch, sameBranch, getDayReport);
 router.get("/till", validBranch, sameBranch, getTill);
