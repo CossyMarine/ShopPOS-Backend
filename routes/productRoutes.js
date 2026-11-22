@@ -6,6 +6,7 @@ import {
 } from "../controllers/productController.js";
 import { protect, authorize, sameBranch } from "../Middlewares/authMiddleware.js";
 import { uploadProductImage as uploadProductImageMiddleware } from "../Config/cloudinary.js";
+import { getProductInsights } from "../controllers/productInsightsController.js";
 
 const router = express.Router();
 
@@ -15,6 +16,7 @@ const sellStaff   = authorize("admin", "branchManager", "cashier", "storekeeper"
 router.get("/", protect, sellStaff, sameBranch, getProducts);          // catalog — cashier + others read
 router.get("/barcode/:code", protect, sellStaff, sameBranch, getProductByBarcode);
 
+router.get("/:id/insights", protect, stockStaff, sameBranch, getProductInsights);
 router.post("/upload-image", protect, stockStaff, uploadProductImageMiddleware.single("image"), uploadProductImage);
 router.post("/", protect, stockStaff, sameBranch, createProduct);
 router.put("/:id", protect, stockStaff, sameBranch, updateProduct);
