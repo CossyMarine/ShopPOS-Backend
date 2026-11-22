@@ -3,7 +3,7 @@
 // Powers the Admin "Analytics" page: totals, top/stuck items, branch
 // performance, and a full salary/profit breakdown — all filterable by
 // branch (default: all branches) and by date range (today / last 7 days /
-// last 30 days / this year / custom).
+// last 30 days / this month / last month / this year / all / custom).
 //
 // Reuses the same costPriceAtSale-first / batch-cost-fallback profit logic
 // already established in revenueController.getDashboardStats, so numbers
@@ -41,6 +41,22 @@ const SLOW_MOVING_RATIO = 0.5;
 // has no DST, same assumption already used by dateHelpers.js and the
 // frontend's kenyanDayBound helper).
 // ---------------------------------------------------------------------
+const pad2 = (n) => String(n).padStart(2, "0");
+
+// Current year and month (1-12) on the Nairobi calendar, independent of
+// the server's own timezone.
+const nairobiYM = () => {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Nairobi",
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(new Date());
+  return {
+    y: Number(parts.find((p) => p.type === "year").value),
+    m: Number(parts.find((p) => p.type === "month").value),
+  };
+};
+
 export const resolveAnalyticsRange = (range, from, to) => {
   const today = getKenyanDate();
   const endOfToday = new Date(today);
@@ -62,10 +78,33 @@ export const resolveAnalyticsRange = (range, from, to) => {
       start.setHours(0, 0, 0, 0);
       return { start, end: endOfToday };
     }
+    case "this_month": {
+      // 1st of the current Nairobi month up to the end of today
+      const { y, m } = nairobiYM();
+      return {
+        start: new Date(`${y}-${pad2(m)}-01T00:00:00.000+03:00`),
+        end: endOfToday,
+      };
+    }
+    case "last_month": {
+      // The whole previous calendar month (not "last 30 days")
+      const { y, m } = nairobiYM();
+      const ly = m === 1 ? y - 1 : y;
+      const lm = m === 1 ? 12 : m - 1;
+      const lastDay = new Date(Date.UTC(ly, lm, 0)).getUTCDate();
+      return {
+        start: new Date(`${ly}-${pad2(lm)}-01T00:00:00.000+03:00`),
+        end: new Date(`${ly}-${pad2(lm)}-${pad2(lastDay)}T23:59:59.999+03:00`),
+      };
+    }
     case "year": {
       const start = new Date(today.getFullYear(), 0, 1);
       start.setHours(0, 0, 0, 0);
       return { start, end: endOfToday };
+    }
+    case "all": {
+      // Everything on record, up to the end of today
+      return { start: new Date("2000-01-01T00:00:00.000+03:00"), end: endOfToday };
     }
     case "custom": {
       if (!from || !to) {
@@ -86,7 +125,7 @@ export const resolveAnalyticsRange = (range, from, to) => {
 };
 
 // ---------------------------------------------------------------------
-// GET /api/analytics/overview?branch=&range=today|last_7_days|last_30_days|year|custom&from=&to=
+// GET /api/analytics/overview?branch=&range=today|last_7_days|last_30_days|this_month|last_month|year|all|custom&from=&to=
 // ---------------------------------------------------------------------
 export const getAnalyticsOverview = async (req, res, next) => {
   try {
@@ -454,7 +493,7 @@ export function costEstimationStages() {
 }
 
 // ---------------------------------------------------------------------
-// GET /api/analytics/category-margin?branch=&range=today|last_7_days|last_30_days|year|custom&from=&to=
+// GET /api/analytics/category-margin?branch=&range=today|last_7_days|last_30_days|this_month|last_month|year|all|custom&from=&to=
 // Revenue, cost and margin % rolled up by product category — the number
 // that answers "which departments actually make money" rather than just
 // "which departments sell the most" (revenue alone hides a category that
