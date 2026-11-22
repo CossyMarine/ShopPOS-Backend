@@ -16,6 +16,24 @@ export const getPayrollSettings = async (req, res, next) => {
   }
 };
 
+const NUM = ["hourlyRate","overtimeMultiplier","dailyRateWeekday","dailyRateWeekend","monthlySalary","commissionRate"];
+const SCHED_NUM = ["disburseAfterHours","intervalDays","payDay"];
+
+const pickSettings = (body) => {
+  const out = {};
+  if (body.wageType) out.wageType = body.wageType;
+  if (body.paymentMethod) out.paymentMethod = body.paymentMethod;
+  for (const k of NUM) if (body[k] !== undefined && body[k] !== "") out[k] = Number(body[k]);
+  if (typeof body.applyStatutoryDeductions === "boolean") out.applyStatutoryDeductions = body.applyStatutoryDeductions;
+  if (typeof body.assumeShiftCheck === "boolean") out.assumeShiftCheck = body.assumeShiftCheck;
+  if (Array.isArray(body.selectedDeductions)) out.selectedDeductions = body.selectedDeductions;
+  const sch = body.schedule || {};
+  if (sch.shiftStart) out["schedule.shiftStart"] = sch.shiftStart;
+  if (sch.shiftEnd) out["schedule.shiftEnd"] = sch.shiftEnd;
+  for (const k of SCHED_NUM) if (sch[k] !== undefined && sch[k] !== "") out[`schedule.${k}`] = Number(sch[k]);
+  return out;
+};
+
 export const upsertPayrollSettings = async (req, res, next) => {
   const branch = req.body.branch || (req.user.isAdmin ? null : req.user.branch);
   if (branch && !req.user.isAdmin && String(branch) !== String(req.user.branch)) {
@@ -26,7 +44,7 @@ export const upsertPayrollSettings = async (req, res, next) => {
 
     const settings = await PayrollSettings.findOneAndUpdate(
       { branch },
-      { $set: { ...req.body, branch, updatedBy: req.user._id } },
+      { $set: { ...pickSettings(req.body), branch, updatedBy: req.user._id } },
       { new: true, upsert: true, runValidators: true }
     );
 
