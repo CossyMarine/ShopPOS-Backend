@@ -15,11 +15,25 @@ export const getCatalog = async (req, res, next) => {
     if (req.query.branch) filter.branch = req.query.branch;
 
     const products = await Product.find(filter)
-      .select("name category sellingPrice imageUrl barcode branch")
-      .sort({ category: 1, name: 1 });
+      .select("name category sellingPrice imageUrl barcode branch packs")
+      .sort({ category: 1, name: 1 })
+      .lean();
 
-    logSuccess("customer", "Catalog loaded", { count: products.length });
-    res.json(products);
+    // Expose only what a shopper needs. Pack barcodes stay private, and a pack
+    // with no price of its own gets pieces × piece price, same as the till.
+    const out = products.map((p) => ({
+      ...p,
+      packs: (p.packs || []).map((k) => ({
+        _id: k._id,
+        name: k.name,
+        qty: k.qty,
+        imageUrl: k.imageUrl || null,
+        price: k.price > 0 ? k.price : Number((k.qty * p.sellingPrice).toFixed(2)),
+      })),
+    }));
+
+    logSuccess("customer", "Catalog loaded", { count: out.length });
+    res.json(out);
   } catch (error) {
     next(error);
   }
