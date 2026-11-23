@@ -20,6 +20,11 @@ const orderItemSchema = new mongoose.Schema(
     promotionApplied: { type: mongoose.Schema.Types.ObjectId, ref: "Promotion", default: null },
     promotionName: { type: String, default: null },
     discountAmount: { type: Number, default: 0 },
+        // Pack sales (carton/box/bale). `quantity` above stays in PIECES.
+    packId:    { type: mongoose.Schema.Types.ObjectId, default: null },
+    packName:  { type: String, default: null },
+    packQty:   { type: Number, default: null },   // pieces inside one pack
+    packCount: { type: Number, default: null },   // how many packs were sold
   },
   { _id: false }
 );
