@@ -26,6 +26,8 @@ const packSchema = new mongoose.Schema(
     qty:     { type: Number, required: true, min: 2 },
     barcode: { type: String, trim: true, default: null },
     price:   { type: Number, default: null, min: 0 }, // selling price per whole pack, null = auto
+    imageUrl:      { type: String, default: null },   //  pack photo (falls back to product photo)
+    imagePublicId: { type: String, default: null },
   },
   { _id: true }
 );
