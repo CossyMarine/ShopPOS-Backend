@@ -28,6 +28,9 @@ const preparePacks = (raw) => {
       qty,
       barcode: String(r.barcode || "").trim() || null,
       price: Number(r.price) > 0 ? Number(r.price) : null,
+      // Optional pack photo. null = the cashier tile falls back to the product photo.
+      imageUrl: String(r.imageUrl || "").trim() || null,
+      imagePublicId: String(r.imagePublicId || "").trim() || null,
     };
     if (r._id) pack._id = r._id; // keep ids of existing packs stable
     return pack;
@@ -73,6 +76,14 @@ const migrateLegacyPacks = async (branch) => {
   }
 };
 
+// Removes a Cloudinary asset without ever failing the request.
+const destroyImage = (publicId, label = "image") =>
+  publicId
+    ? cloudinary.uploader.destroy(publicId).catch((err) => {
+        console.warn(`[product] ⚠️ Failed to destroy ${label} ${publicId}:`, err.message);
+      })
+    : Promise.resolve();
+
 // @desc    Get products for a branch (falls back to name if no image — handled in frontend)
 // @route   GET /api/products?branch=<id>&status=active|archived|all
 // @access  Public (customer catalog) / Protected (staff, auto-scoped via sameBranch)
@@ -112,6 +123,8 @@ export const getProducts = async (req, res, next) => {
     // business being on a cashier's screen, so it's stripped for them.
     // currentStock is a virtual derived from batches, computed first via
     // toObject({ virtuals: true }) before batches gets removed.
+    // (packs[] — including each pack's price and photo — is kept: the cashier
+    // needs it to show and sell cartons/boxes/bales.)
     const isCashier = req.user?.role === "cashier";
     const payload = products.map((p) => {
       const obj = p.toObject({ virtuals: true });
@@ -146,22 +159,26 @@ export const getProducts = async (req, res, next) => {
 };
 
 // @desc    Look up a single product by barcode — powers the cashier scan input.
-//          Matches either the each barcode or the case barcode.
+//          Matches the each barcode, the legacy case barcode, or ANY pack
+//          barcode. `matchedPackId` tells the cashier which one was scanned:
+//          null = the single piece, otherwise the _id of the pack (carton,
+//          box, bale...) so the cashier adds that pack, not one piece.
 // @route   GET /api/products/barcode/:code?branch=<id>
 // @access  Protected — cashier, storekeeper, branchManager, admin
 export const getProductByBarcode = async (req, res, next) => {
   try {
-    logStart("product", "Looking up barcode", { code: req.params.code, branch: req.query.branch });
+    const code = req.params.code;
+    logStart("product", "Looking up barcode", { code, branch: req.query.branch });
 
     const filter = {
       isActive: true,
-      $or: [{ barcode: req.params.code }, { caseBarcode: req.params.code }],
+      $or: [{ barcode: code }, { caseBarcode: code }, { "packs.barcode": code }],
     };
     if (req.query.branch) filter.branch = req.query.branch;
 
     const product = await Product.findOne(filter).populate("unit", "name abbreviation");
     if (!product) {
-      console.warn(`[product] ⚠️ No product found for barcode: ${req.params.code}`);
+      console.warn(`[product] ⚠️ No product found for barcode: ${code}`);
       return res.status(404).json({ message: "Product not found" });
     }
 
@@ -170,7 +187,10 @@ export const getProductByBarcode = async (req, res, next) => {
     const payload = product.toObject({ virtuals: true });
     if (req.user?.role === "cashier") delete payload.batches;
 
-    logSuccess("product", "Barcode matched", { code: req.params.code, productId: product._id, name: product.name });
+    const hit = (product.packs || []).find((k) => k.barcode && k.barcode === code);
+    payload.matchedPackId = hit ? String(hit._id) : null;
+
+    logSuccess("product", "Barcode matched", { code, productId: product._id, name: product.name, pack: hit?.name || null });
     res.json(payload);
   } catch (error) {
     next(error);
@@ -178,6 +198,7 @@ export const getProductByBarcode = async (req, res, next) => {
 };
 
 // @desc    Upload a product image (falls back to name display if skipped)
+//          Also used for pack (carton/box/bale) photos.
 // @route   POST /api/products/upload-image
 // @access  Protected — storekeeper, branchManager, admin
 export const uploadProductImage = async (req, res, next) => {
@@ -197,7 +218,7 @@ export const uploadProductImage = async (req, res, next) => {
 };
 
 // @desc    Create a product (storekeeper adds a new item to the catalog)
-//          packs: [{ name, qty, barcode?, price? }] — any number of pack sizes
+//          packs: [{ name, qty, barcode?, price?, imageUrl?, imagePublicId? }] — any number of pack sizes
 //          opening: { quantity (in base units), costPerUnit (per base unit), expiryDate? }
 //                   optional stock already on the shelf
 // @route   POST /api/products
@@ -290,6 +311,11 @@ export const updateProduct = async (req, res, next) => {
       }
     }
 
+    // Pack photos that are replaced or removed in this edit. They're deleted
+    // from Cloudinary only AFTER the update succeeds, so a failed save never
+    // leaves a pack pointing at a photo that no longer exists.
+    let staleItemImages = [];
+
     // Packs: validate, check barcodes, and keep the old single-pack fields in
     // sync with the largest pack so cashier / transfers keep working.
     if (req.body.packs !== undefined) {
@@ -302,16 +328,22 @@ export const updateProduct = async (req, res, next) => {
       );
       updates.packs = cleanPacks;
       Object.assign(updates, legacyFrom(cleanPacks));
+
+      const keep = new Set(cleanPacks.map((k) => k.imagePublicId).filter(Boolean));
+      staleItemImages = (existing.packs || [])
+        .map((k) => k.imagePublicId)
+        .filter((id) => id && !keep.has(id));
     }
 
     if (updates.imagePublicId !== undefined && existing.imagePublicId && existing.imagePublicId !== updates.imagePublicId) {
       console.log(`[product] → Replacing image — destroying old Cloudinary asset ${existing.imagePublicId}`);
-      await cloudinary.uploader.destroy(existing.imagePublicId).catch((err) => {
-        console.warn(`[product] ⚠️ Failed to destroy old Cloudinary asset ${existing.imagePublicId}:`, err.message);
-      });
+      await destroyImage(existing.imagePublicId, "Cloudinary asset");
     }
 
     const product = await Product.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true });
+
+    // Update saved — now it's safe to clean up replaced/removed pack photos.
+    for (const id of staleItemImages) await destroyImage(id, "pack image");
 
     // Price changes go on the audit trail too — a direct edit here is just
     // as much a pricing decision as a scheduled one, and "who changed what
@@ -432,11 +464,9 @@ export const deleteProduct = async (req, res, next) => {
       console.warn(`[product] ⚠️ Product not found: ${req.params.id}`);
       return res.status(404).json({ message: "Product not found" });
     }
-    if (product.imagePublicId) {
-      await cloudinary.uploader.destroy(product.imagePublicId).catch((err) => {
-        console.warn(`[product] ⚠️ Failed to destroy Cloudinary asset ${product.imagePublicId}:`, err.message);
-      });
-    }
+    await destroyImage(product.imagePublicId, "Cloudinary asset");
+    // Pack (carton/box/bale) photos go too, so no orphaned files stay in Cloudinary.
+    for (const k of product.packs || []) await destroyImage(k.imagePublicId, "pack image");
 
     logSuccess("product", "Product deleted", { productId: req.params.id, name: product.name });
     res.json({ message: "Product deleted" });
