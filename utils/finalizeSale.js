@@ -32,6 +32,19 @@ import { creditCashback } from "./walletPayments.js";
 // what payReceipt does for a live cash sale — instead of landing as an
 // unpaid receipt waiting for a second online-only call that offline mode
 // has no way to make.
+//
+// PACK LINES (carton / box / bale):
+// A line may carry { packId, packCount }. The client only says "2 cartons";
+// the server works out the rest from the product's own pack data:
+//   - line.quantity  = packCount × pack.qty   (the ledger stays in PIECES, so
+//                      FIFO stock, cost, profit, voids and analytics all keep
+//                      working with no changes)
+//   - line.lineTotal = packCount × pack price (the pack's own price, or
+//                      pieces × piece price when the pack has no price),
+//                      after any promotion — promotions apply per pack sold
+//   - line.unitPrice = lineTotal ÷ pieces     (price per piece)
+// packId / packName / packQty / packCount are kept on the line so receipts
+// can show "2 × Carton of 12".
 export const finalizeSale = async ({
   items,
   branch,
@@ -76,6 +89,31 @@ export const finalizeSale = async ({
         const product = await Product.findById(line.productId).session(session);
         if (!product) throw notFound(`Product: ${line.productName}`);
 
+        // ---- Pack line: turn "N packs" into pieces ----
+        let pack = null;
+        let packCount = 0;
+        if (line.packId) {
+          packCount = Number(line.packCount);
+          if (!Number.isInteger(packCount) || packCount < 1) {
+            throw badRequest(`Invalid pack quantity for ${line.productName}`);
+          }
+          pack = (product.packs || []).find((k) => String(k._id) === String(line.packId)) || null;
+
+          // A live sale must match a pack that exists right now. An offline
+          // sale already happened, so if the pack was edited or removed
+          // since, fall back to the pack size the till rang it up with.
+          if (!pack && !syncedFromOffline) {
+            throw badRequest(`${line.productName}: that pack no longer exists. Refresh the catalog and try again.`);
+          }
+          const packQty = pack ? pack.qty : Number(line.packQty);
+          if (!(packQty > 1)) throw badRequest(`${line.productName}: invalid pack size`);
+
+          line.packName = pack ? pack.name : line.packName;
+          line.packQty = packQty;
+          line.packCount = packCount;
+          line.quantity = packCount * packQty; // the ledger stays in pieces
+        }
+
         const { avgCostPerUnit, shortfall } = await deductStockFIFO(product, line.quantity, {
           session,
           allowNegative: allowNegativeStock,
@@ -94,13 +132,27 @@ export const finalizeSale = async ({
         // at — only a genuinely live checkout gets the fresh server-side
         // promo/price computation.
         if (!syncedFromOffline) {
-          const priced = applyPromotionToLine(livePromotions, product, line.quantity, product.sellingPrice);
-          line.originalUnitPrice = product.sellingPrice;
-          line.unitPrice = priced.unitPrice;
-          line.lineTotal = priced.lineTotal;
-          line.promotionApplied = priced.promotionApplied;
-          line.promotionName = priced.promotionName;
-          line.discountAmount = priced.discountAmount;
+          if (pack) {
+            // The pack's own price, or pieces × piece price when it has none.
+            // A promotion applies per pack sold (a "KES 50 off" takes 50 off
+            // each carton, not off each piece inside it).
+            const packPrice = pack.price ?? pack.qty * product.sellingPrice;
+            const priced = applyPromotionToLine(livePromotions, product, packCount, packPrice);
+            line.originalUnitPrice = Number((packPrice / pack.qty).toFixed(4));            // per piece
+            line.unitPrice = Number((priced.lineTotal / line.quantity).toFixed(4));        // per piece
+            line.lineTotal = priced.lineTotal;                                             // exact pack total
+            line.promotionApplied = priced.promotionApplied;
+            line.promotionName = priced.promotionName;
+            line.discountAmount = priced.discountAmount;
+          } else {
+            const priced = applyPromotionToLine(livePromotions, product, line.quantity, product.sellingPrice);
+            line.originalUnitPrice = product.sellingPrice;
+            line.unitPrice = priced.unitPrice;
+            line.lineTotal = priced.lineTotal;
+            line.promotionApplied = priced.promotionApplied;
+            line.promotionName = priced.promotionName;
+            line.discountAmount = priced.discountAmount;
+          }
         }
       }
 
@@ -134,28 +186,27 @@ export const finalizeSale = async ({
       receipt = await generateReceiptForOrder(order, { session, shift: shiftId });
 
       if (cashPayment) {
-  const balanceDue = receipt.totalDue; // full amount — offline sales are never partial
-  // Till leg is what the cashier said went to the till; the rest is cash.
-  // (Older queued sales have no tillAmount, so they stay 100% cash.)
-  const tillLeg = Math.min(Math.max(Number(cashPayment.tillAmount) || 0, 0), balanceDue);
-  const cashLeg = Number((balanceDue - tillLeg).toFixed(2));
-  const received = Number(cashPayment.cashAmount ?? cashPayment.amountPaid) || cashLeg;
-  const changeGiven = cashLeg > 0 ? Number((Math.max(received, cashLeg) - cashLeg).toFixed(2)) : 0;
+        const balanceDue = receipt.totalDue; // full amount — offline sales are never partial
+        // Till leg is what the cashier said went to the till; the rest is cash.
+        // (Older queued sales have no tillAmount, so they stay 100% cash.)
+        const tillLeg = Math.min(Math.max(Number(cashPayment.tillAmount) || 0, 0), balanceDue);
+        const cashLeg = Number((balanceDue - tillLeg).toFixed(2));
+        const received = Number(cashPayment.cashAmount ?? cashPayment.amountPaid) || cashLeg;
+        const changeGiven = cashLeg > 0 ? Number((Math.max(received, cashLeg) - cashLeg).toFixed(2)) : 0;
 
-  receipt.status = "paid";
-  receipt.paymentMethod = tillLeg > 0 && cashLeg > 0 ? "both" : tillLeg > 0 ? "manual_till" : "cash";
-  receipt.cashAmount = cashLeg;
-  receipt.tillAmount = tillLeg;
-  receipt.amountPaid = receipt.totalDue;
-  receipt.changeGiven = changeGiven;
-  receipt.paidAt = order.soldAt; // the actual moment of sale, not sync time
-  if (cashLeg > 0) receipt.payments.push({ amount: cashLeg, method: "cash", paidBy: cashierId, paidAt: order.soldAt });
-  if (tillLeg > 0) receipt.payments.push({ amount: tillLeg, method: "manual_till", paidBy: cashierId, paidAt: order.soldAt });
+        receipt.status = "paid";
+        receipt.paymentMethod = tillLeg > 0 && cashLeg > 0 ? "both" : tillLeg > 0 ? "manual_till" : "cash";
+        receipt.cashAmount = cashLeg;
+        receipt.tillAmount = tillLeg;
+        receipt.amountPaid = receipt.totalDue;
+        receipt.changeGiven = changeGiven;
+        receipt.paidAt = order.soldAt; // the actual moment of sale, not sync time
+        if (cashLeg > 0) receipt.payments.push({ amount: cashLeg, method: "cash", paidBy: cashierId, paidAt: order.soldAt });
+        if (tillLeg > 0) receipt.payments.push({ amount: tillLeg, method: "manual_till", paidBy: cashierId, paidAt: order.soldAt });
 
-  await creditCashback(receipt, balanceDue, { session });
-  await receipt.save({ session });
+        await creditCashback(receipt, balanceDue, { session });
+        await receipt.save({ session });
       }
-      
     });
   } finally {
     await session.endSession();
