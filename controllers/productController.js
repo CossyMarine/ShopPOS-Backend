@@ -37,6 +37,25 @@ const preparePacks = (raw) => {
   });
 };
 
+// Validates and cleans the portions[] array (sell LESS than the base unit:
+// ½ kg, ¼ kg, half bar...). qty = base units used per portion.
+const preparePortions = (raw) => {
+  const seen = new Set();
+  return (raw || []).map((r) => {
+    const name = String(r.name || "").trim();
+    const qty = Number(Number(r.qty).toFixed(3));
+    const price = Number(r.price);
+    if (!name) throw badRequest("Every portion needs a name");
+    if (!(qty > 0)) throw badRequest(`${name}: enter how much of the base unit it uses`);
+    if (!(price > 0)) throw badRequest(`${name}: enter a selling price`);
+    if (seen.has(name.toLowerCase())) throw badRequest(`Portion name "${name}" is used twice`);
+    seen.add(name.toLowerCase());
+    const portion = { name, qty, price, barcode: String(r.barcode || "").trim() || null };
+    if (r._id) portion._id = r._id;
+    return portion;
+  });
+};
+
 // The largest pack drives the old single-pack fields, so the cashier,
 // stock transfers and pricing code (which still read packSize / caseLabel /
 // caseBarcode / casePrice) keep working untouched.
@@ -48,14 +67,17 @@ const legacyFrom = (packs) => {
 };
 
 // A barcode may belong to only one product per branch — each barcode, the
-// case barcode, and every pack barcode are all checked.
-const checkCodes = async (branch, selfId, barcode, packs) => {
-  const codes = [barcode, ...packs.map((p) => p.barcode)].filter(Boolean);
+// case barcode, every pack barcode and every portion barcode are all checked.
+const checkCodes = async (branch, selfId, barcode, packs, portions = []) => {
+  const codes = [barcode, ...packs.map((p) => p.barcode), ...portions.map((p) => p.barcode)].filter(Boolean);
   if (new Set(codes).size !== codes.length) throw badRequest("Two barcodes on this product are the same");
   if (!codes.length) return;
   const q = {
     branch,
-    $or: [{ barcode: { $in: codes } }, { caseBarcode: { $in: codes } }, { "packs.barcode": { $in: codes } }],
+    $or: [
+      { barcode: { $in: codes } }, { caseBarcode: { $in: codes } },
+      { "packs.barcode": { $in: codes } }, { "portions.barcode": { $in: codes } },
+    ],
   };
   if (selfId) q._id = { $ne: selfId };
   const clash = await Product.findOne(q).select("name");
@@ -123,8 +145,8 @@ export const getProducts = async (req, res, next) => {
     // business being on a cashier's screen, so it's stripped for them.
     // currentStock is a virtual derived from batches, computed first via
     // toObject({ virtuals: true }) before batches gets removed.
-    // (packs[] — including each pack's price and photo — is kept: the cashier
-    // needs it to show and sell cartons/boxes/bales.)
+    // (packs[] and portions[] — including prices and photos — are kept: the
+    // cashier needs them to show and sell cartons/boxes/bales and ½ / ¼ portions.)
     const isCashier = req.user?.role === "cashier";
     const payload = products.map((p) => {
       const obj = p.toObject({ virtuals: true });
@@ -159,10 +181,11 @@ export const getProducts = async (req, res, next) => {
 };
 
 // @desc    Look up a single product by barcode — powers the cashier scan input.
-//          Matches the each barcode, the legacy case barcode, or ANY pack
-//          barcode. `matchedPackId` tells the cashier which one was scanned:
-//          null = the single piece, otherwise the _id of the pack (carton,
-//          box, bale...) so the cashier adds that pack, not one piece.
+//          Matches the each barcode, the legacy case barcode, ANY pack
+//          barcode, or ANY portion barcode. `matchedPackId` tells the cashier
+//          which pack was scanned (null = not a pack); `matchedPortionId`
+//          tells which portion was scanned (null = not a portion). If both
+//          are null, the single piece / base unit was scanned.
 // @route   GET /api/products/barcode/:code?branch=<id>
 // @access  Protected — cashier, storekeeper, branchManager, admin
 export const getProductByBarcode = async (req, res, next) => {
@@ -172,7 +195,7 @@ export const getProductByBarcode = async (req, res, next) => {
 
     const filter = {
       isActive: true,
-      $or: [{ barcode: code }, { caseBarcode: code }, { "packs.barcode": code }],
+      $or: [{ barcode: code }, { caseBarcode: code }, { "packs.barcode": code }, { "portions.barcode": code }],
     };
     if (req.query.branch) filter.branch = req.query.branch;
 
@@ -190,7 +213,13 @@ export const getProductByBarcode = async (req, res, next) => {
     const hit = (product.packs || []).find((k) => k.barcode && k.barcode === code);
     payload.matchedPackId = hit ? String(hit._id) : null;
 
-    logSuccess("product", "Barcode matched", { code, productId: product._id, name: product.name, pack: hit?.name || null });
+    const hitPortion = (product.portions || []).find((k) => k.barcode && k.barcode === code);
+    payload.matchedPortionId = hitPortion ? String(hitPortion._id) : null;
+
+    logSuccess("product", "Barcode matched", {
+      code, productId: product._id, name: product.name,
+      pack: hit?.name || null, portion: hitPortion?.name || null,
+    });
     res.json(payload);
   } catch (error) {
     next(error);
@@ -218,7 +247,8 @@ export const uploadProductImage = async (req, res, next) => {
 };
 
 // @desc    Create a product (storekeeper adds a new item to the catalog)
-//          packs: [{ name, qty, barcode?, price?, imageUrl?, imagePublicId? }] — any number of pack sizes
+//          packs:    [{ name, qty, barcode?, price?, imageUrl?, imagePublicId? }] — any number of pack sizes
+//          portions: [{ name, qty, price, barcode? }] — ways to sell less than the base unit (½ kg, ¼ kg...)
 //          opening: { quantity (in base units), costPerUnit (per base unit), expiryDate? }
 //                   optional stock already on the shelf
 // @route   POST /api/products
@@ -226,7 +256,7 @@ export const uploadProductImage = async (req, res, next) => {
 export const createProduct = async (req, res, next) => {
   try {
     const {
-      name, barcode, category, unit, sellingPrice, reorderLevel, packs, sku, description,
+      name, barcode, category, unit, sellingPrice, reorderLevel, packs, portions, sku, description,
       maxLevel, reorderQty, perishable, allowDecimals, supplier,
       imageUrl, imagePublicId, branch, vatClass, opening,
     } = req.body;
@@ -242,12 +272,14 @@ export const createProduct = async (req, res, next) => {
     }
 
     const cleanPacks = preparePacks(packs);
-    await checkCodes(branch, null, barcode || null, cleanPacks);
+    const cleanPortions = preparePortions(portions);
+    await checkCodes(branch, null, barcode || null, cleanPacks, cleanPortions);
 
     const product = new Product({
       name, barcode: barcode || undefined, category: category || "General",
       unit, sellingPrice, reorderLevel: reorderLevel || 0,
       packs: cleanPacks, ...legacyFrom(cleanPacks),
+      portions: cleanPortions,
       sku: sku || "", description: description || "",
       maxLevel: Number(maxLevel) || 0, reorderQty: Number(reorderQty) || 0,
       perishable: !!perishable,
@@ -281,7 +313,7 @@ export const createProduct = async (req, res, next) => {
   }
 };
 
-// @desc    Update product details (name, price, category, barcode, image, packs, stock rules, archive)
+// @desc    Update product details (name, price, category, barcode, image, packs, portions, stock rules, archive)
 // @route   PUT /api/products/:id
 // @access  Protected — storekeeper, branchManager, admin
 export const updateProduct = async (req, res, next) => {
@@ -316,6 +348,10 @@ export const updateProduct = async (req, res, next) => {
     // leaves a pack pointing at a photo that no longer exists.
     let staleItemImages = [];
 
+    // Portions are cleaned up front so the pack check below can also compare
+    // against them (a pack barcode must not clash with a portion barcode).
+    const cleanPortions = req.body.portions !== undefined ? preparePortions(req.body.portions) : null;
+
     // Packs: validate, check barcodes, and keep the old single-pack fields in
     // sync with the largest pack so cashier / transfers keep working.
     if (req.body.packs !== undefined) {
@@ -324,7 +360,8 @@ export const updateProduct = async (req, res, next) => {
         existing.branch,
         existing._id,
         updates.barcode !== undefined ? updates.barcode : existing.barcode,
-        cleanPacks
+        cleanPacks,
+        cleanPortions || existing.portions || []
       );
       updates.packs = cleanPacks;
       Object.assign(updates, legacyFrom(cleanPacks));
@@ -333,6 +370,18 @@ export const updateProduct = async (req, res, next) => {
       staleItemImages = (existing.packs || [])
         .map((k) => k.imagePublicId)
         .filter((id) => id && !keep.has(id));
+    }
+
+    // Portions: validate, check barcodes against the product, its packs and
+    // every other product in the branch.
+    if (cleanPortions) {
+      await checkCodes(
+        existing.branch, existing._id,
+        updates.barcode !== undefined ? updates.barcode : existing.barcode,
+        updates.packs || existing.packs || [],
+        cleanPortions
+      );
+      updates.portions = cleanPortions;
     }
 
     if (updates.imagePublicId !== undefined && existing.imagePublicId && existing.imagePublicId !== updates.imagePublicId) {
