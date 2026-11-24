@@ -25,6 +25,10 @@ const orderItemSchema = new mongoose.Schema(
     packName:  { type: String, default: null },
     packQty:   { type: Number, default: null },   // pieces inside one pack
     packCount: { type: Number, default: null },   // how many packs were sold
+    portionId:    { type: mongoose.Schema.Types.ObjectId, default: null },
+    portionName:  { type: String, default: null },
+    portionQty:   { type: Number, default: null },  // base units in one portion
+    portionCount: { type: Number, default: null },  // how many portions were sold
   },
   { _id: false }
 );
