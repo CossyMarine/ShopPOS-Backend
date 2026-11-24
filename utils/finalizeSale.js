@@ -45,6 +45,17 @@ import { creditCashback } from "./walletPayments.js";
 //   - line.unitPrice = lineTotal ÷ pieces     (price per piece)
 // packId / packName / packQty / packCount are kept on the line so receipts
 // can show "2 × Carton of 12".
+//
+// PORTION LINES (½ kg, ¼ kg, half bar...):
+// A line may carry { portionId, portionCount }. Same idea as packs, but for
+// selling LESS than the base unit:
+//   - line.quantity  = portionCount × portion.qty (BASE units, e.g. 2 × ¼ kg = 0.5 kg,
+//                      so FIFO stock, cost and profit keep working unchanged)
+//   - line.lineTotal = portionCount × portion price, after any promotion —
+//                      promotions apply per portion sold
+//   - line.unitPrice = lineTotal ÷ base units (price per base unit)
+// portionId / portionName / portionQty / portionCount are kept on the line so
+// receipts can show "2 × ¼ kg".
 export const finalizeSale = async ({
   items,
   branch,
@@ -114,6 +125,26 @@ export const finalizeSale = async ({
           line.quantity = packCount * packQty; // the ledger stays in pieces
         }
 
+        // ---- Portion line: "N portions" -> base units (e.g. 2 × ¼ kg = 0.5 kg) ----
+        let portion = null;
+        let portionCount = 0;
+        if (line.portionId) {
+          portionCount = Number(line.portionCount);
+          if (!Number.isInteger(portionCount) || portionCount < 1) {
+            throw badRequest(`Invalid portion quantity for ${line.productName}`);
+          }
+          portion = (product.portions || []).find((k) => String(k._id) === String(line.portionId)) || null;
+          if (!portion && !syncedFromOffline) {
+            throw badRequest(`${line.productName}: that portion no longer exists. Refresh the catalog and try again.`);
+          }
+          const portionQty = portion ? portion.qty : Number(line.portionQty);
+          if (!(portionQty > 0)) throw badRequest(`${line.productName}: invalid portion size`);
+          line.portionName = portion ? portion.name : line.portionName;
+          line.portionQty = portionQty;
+          line.portionCount = portionCount;
+          line.quantity = Number((portionCount * portionQty).toFixed(3)); // ledger stays in BASE units
+        }
+
         const { avgCostPerUnit, shortfall } = await deductStockFIFO(product, line.quantity, {
           session,
           allowNegative: allowNegativeStock,
@@ -141,6 +172,15 @@ export const finalizeSale = async ({
             line.originalUnitPrice = Number((packPrice / pack.qty).toFixed(4));            // per piece
             line.unitPrice = Number((priced.lineTotal / line.quantity).toFixed(4));        // per piece
             line.lineTotal = priced.lineTotal;                                             // exact pack total
+            line.promotionApplied = priced.promotionApplied;
+            line.promotionName = priced.promotionName;
+            line.discountAmount = priced.discountAmount;
+          } else if (portion) {
+            // The portion's own price. Promotions apply per portion sold.
+            const priced = applyPromotionToLine(livePromotions, product, portionCount, portion.price);
+            line.originalUnitPrice = Number((portion.price / portion.qty).toFixed(4)); // per base unit
+            line.unitPrice = Number((priced.lineTotal / line.quantity).toFixed(4));    // per base unit
+            line.lineTotal = priced.lineTotal;
             line.promotionApplied = priced.promotionApplied;
             line.promotionName = priced.promotionName;
             line.discountAmount = priced.discountAmount;
