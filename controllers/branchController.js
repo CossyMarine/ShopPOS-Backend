@@ -45,7 +45,7 @@ export const createBranch = async (req, res, next) => {
 // @access  Protected — admin only
 export const updateBranch = async (req, res, next) => {
   try {
-    const allowed = ["name", "address", "taxRate", "isActive", "isWarehouse", "tillNumber", "tillName"];
+    const allowed = ["name", "address", "taxRate", "isActive", "isWarehouse", "tillNumber", "tillName", "allowCredit"];
     const updates = {};
     allowed.forEach((key) => { if (req.body[key] !== undefined) updates[key] = req.body[key]; });
 
@@ -142,14 +142,24 @@ export const getMyBranch = async (req, res, next) => {
       logSuccess("branch", "No branch assigned", { user: req.user._id });
       return res.json(null);
     }
-    const branch = await Branch.findById(req.user.branch).select("name");
+
+    const branch = await Branch.findById(req.user.branch).select("name allowCredit");
+
     if (!branch) {
       console.warn(`[branch] ⚠️ Assigned branch not found: ${req.user.branch}`);
       return res.json(null);
     }
 
-    logSuccess("branch", "Own branch loaded", { branchId: branch._id, name: branch.name });
-    res.json({ id: branch._id, name: branch.name });
+    logSuccess("branch", "Own branch loaded", {
+      branchId: branch._id,
+      name: branch.name,
+    });
+
+    res.json({
+      id: branch._id,
+      name: branch.name,
+      allowCredit: !!branch.allowCredit,
+    });
   } catch (error) {
     next(error);
   }
