@@ -11,6 +11,13 @@ import { logStart, logSuccess } from "../utils/requestLogger.js";
 
 const round2 = (n) => Number(Number(n).toFixed(2));
 
+// True if the bill was ever given on credit (still owing OR since settled).
+// Such bills carry a "credit" entry in payments[] for the full amount, so they
+// can only be voided in full — removing single items would leave that entry
+// and the credit record out of step with the bill.
+const hasCreditEntry = (receipt) =>
+  Array.isArray(receipt.payments) && receipt.payments.some((p) => p.method === "credit");
+
 // @desc    Get all pending void requests, with receipt + requester populated
 //          (Super Admin can omit ?branch= to see every branch)
 // @route   GET /api/void-requests?branch=
@@ -60,13 +67,15 @@ export const createVoidRequest = async (req, res, next) => {
     if (receipt.status === "voided") {
       return res.status(400).json({ message: "Receipt is already voided" });
     }
-    if (receipt.status === "credit") {
-      if ((receipt.amountPaid || 0) > 0) {
-        return res.status(400).json({ message: "This credit bill already has payments recorded, so it can't be voided" });
-      }
-      if (Array.isArray(items) && items.length > 0 && items.length < receipt.items.length) {
-        return res.status(400).json({ message: "Credit bills can only be voided in full" });
-      }
+
+    // amountPaid is money received only (the credit entry is not counted), so
+    // > 0 means the customer has already paid something towards this credit.
+    if (receipt.status === "credit" && (receipt.amountPaid || 0) > 0) {
+      return res.status(400).json({ message: "This credit bill already has payments recorded, so it can't be voided" });
+    }
+    const isPartialRequest = Array.isArray(items) && items.length > 0 && items.length < receipt.items.length;
+    if (isPartialRequest && (receipt.status === "credit" || hasCreditEntry(receipt))) {
+      return res.status(400).json({ message: "Bills given on credit can only be voided in full" });
     }
 
     const existingPending = await VoidRequest.findOne({ receipt: receiptId, status: "pending" });
@@ -84,7 +93,7 @@ export const createVoidRequest = async (req, res, next) => {
       lineTotal: line.lineTotal,
     }));
 
-    if (Array.isArray(items) && items.length > 0 && items.length < receipt.items.length) {
+    if (isPartialRequest) {
       const indices = [...new Set(items.map((i) => Number(i)))].filter(
         (i) => Number.isInteger(i) && i >= 0 && i < receipt.items.length
       );
@@ -159,6 +168,13 @@ export const approveVoidRequest = async (req, res, next) => {
         throw badRequest("A payment was recorded on this credit bill after the request. It can't be voided.");
       }
 
+      const isPartial = voidRequest.voidType === "partial" && voidRequest.voidItems.length < receipt.items.length;
+
+      // The bill may have gone on credit after a partial request was made.
+      if (isPartial && (receipt.status === "credit" || hasCreditEntry(receipt))) {
+        throw badRequest("This bill was given on credit, so it can only be voided in full.");
+      }
+
       const now = new Date();
       const restockNote = `Restocked from voided bill ${receipt.billId}`;
 
@@ -167,7 +183,7 @@ export const approveVoidRequest = async (req, res, next) => {
       voidRequest.reviewedAt = now;
       await voidRequest.save({ session });
 
-      if (voidRequest.voidType === "partial" && voidRequest.voidItems.length < receipt.items.length) {
+      if (isPartial) {
         const voidedIndices = new Set(voidRequest.voidItems.map((v) => v.index));
 
         await restockItems(voidRequest.voidItems, restockNote, reviewedBy, { session });
@@ -215,6 +231,10 @@ export const approveVoidRequest = async (req, res, next) => {
       } else {
         receipt.status = "voided";
         receipt.voidedAt = now;
+        // A cancelled credit sale must stop counting as "credit given" in the
+        // payment totals (which read payments[] regardless of receipt status).
+        // The void request and the credit record keep the audit trail.
+        receipt.payments = receipt.payments.filter((p) => p.method !== "credit");
         await receipt.save({ session });
         await restockItems(receipt.items, restockNote, reviewedBy, { session });
         await CreditRecord.updateOne(
