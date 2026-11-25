@@ -1,5 +1,6 @@
 // routes/receiptRoutes.js
 import express from "express";
+import rateLimit from "express-rate-limit";
 import {
   payReceipt,
   payCashAndTill,
@@ -31,6 +32,15 @@ import {
 } from "../Middlewares/validators/receiptValidators.js";
 import { validate } from "../Middlewares/validate.js";
 
+// Stops a stuck button or a bad actor from spamming customers' phones with prompts.
+const stkLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many M-Pesa requests. Wait a minute and try again." },
+});
+
 const router = express.Router();
 
 const posStaff = authorize("cashier", "branchManager", "admin");
@@ -39,7 +49,7 @@ const posStaff = authorize("cashier", "branchManager", "admin");
 router.patch("/:id/pay", protect, posStaff, requireOpenShift, validatePayReceipt, validate, payReceipt);
 router.patch("/:id/pay/cash-till", protect, posStaff, requireOpenShift, validatePayCashAndTill, validate, payCashAndTill);
 router.patch("/:id/pay/combo", protect, posStaff, requireOpenShift, validatePayCombo, validate, payCombo);
-router.post("/:id/mpesa/initiate", protect, posStaff, requireOpenShift, validateInitiateMpesaPayment, validate, initiateMpesaPayment);
+router.post("/:id/mpesa/initiate", stkLimiter, protect, posStaff, requireOpenShift, validateInitiateMpesaPayment, validate, initiateMpesaPayment);
 router.get("/:id/mpesa/status", protect, posStaff, validateReceiptId, validate, getMpesaStatus);
 router.post("/:id/mpesa/cancel", protect, posStaff, validateReceiptId, validate, cancelMpesaPayment);
 
