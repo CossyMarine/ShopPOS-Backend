@@ -1,9 +1,15 @@
 // controllers/revenueController.js
+//
+// A "sale" is a receipt that is paid OR given on credit, dated by
+// receipt.paidAt (for credit bills: the day the credit was given).
 import mongoose from "mongoose";
 import Receipt from "../models/Receipt.js";
 import Product from "../models/Product.js";
 import { getKenyanDayBounds, getKenyanMonthBounds } from "../utils/dateHelpers.js";
 import { logStart, logSuccess } from "../utils/requestLogger.js";
+
+// Receipt statuses that count as a sale.
+const SOLD = ["paid", "credit"];
 
 // "1st", "2nd", "3rd", "12th", "21st" ...
 const ordinal = (n) => {
@@ -12,9 +18,10 @@ const ordinal = (n) => {
   return `${n}${s[(v - 20) % 10] || s[v] || s[0]}`;
 };
 
-// @desc    Get total revenue and paid receipt count for today, optionally
-//          scoped to one branch (?branch=<id>) — powers the Public Customer
-//          Display idle-loop stat and the Cashier dashboard header.
+// @desc    Get total revenue and sold receipt count (paid + credit) for
+//          today, optionally scoped to one branch (?branch=<id>) — powers the
+//          Public Customer Display idle-loop stat and the Cashier dashboard
+//          header.
 // @route   GET /api/revenue/today?branch=
 // @access  Public
 export const getTodayRevenue = async (req, res, next) => {
@@ -27,7 +34,7 @@ export const getTodayRevenue = async (req, res, next) => {
     const result = await Receipt.aggregate([
       {
         $match: {
-          status: "paid",
+          status: { $in: SOLD },
           paidAt: { $gte: startOfDay, $lte: endOfDay },
           ...branchMatch,
         },
@@ -56,6 +63,7 @@ export const getTodayRevenue = async (req, res, next) => {
 // @desc    Get all-time total revenue and total receipt count — Dashboard
 //          Overview cards. Super Admin can omit ?branch= for the "all
 //          branches" combined figure, or pass it to drill into one branch.
+//          Credit bills count as sold (totalPaidReceipts includes them).
 // @route   GET /api/revenue/summary?branch=
 // @access  Protected — admin, branchManager (auto-scoped via sameBranch)
 export const getRevenueSummary = async (req, res, next) => {
@@ -65,7 +73,7 @@ export const getRevenueSummary = async (req, res, next) => {
     const branchMatch = req.query.branch ? { branch: new mongoose.Types.ObjectId(req.query.branch) } : {};
 
     const result = await Receipt.aggregate([
-      { $match: { status: "paid", ...branchMatch } },
+      { $match: { status: { $in: SOLD }, ...branchMatch } },
       {
         $group: {
           _id: null,
@@ -105,6 +113,10 @@ export const getRevenueSummary = async (req, res, next) => {
 //          unavailable (product since sold out / deleted), it assumes 0
 //          margin for that line rather than guessing a number that could
 //          overstate profit.
+//
+//          NOTE on credit: bills given on credit count as sales on the day
+//          they were given, and stay under "credit" in the payment
+//          breakdown even after the customer has settled them.
 // @route   GET /api/revenue/dashboard-stats?branch=
 // @access  Protected — admin, branchManager
 export const getDashboardStats = async (req, res, next) => {
@@ -116,7 +128,7 @@ export const getDashboardStats = async (req, res, next) => {
     const branchMatch = req.query.branch ? { branch: new mongoose.Types.ObjectId(req.query.branch) } : {};
 
     const paidTodayMatch = {
-      status: "paid",
+      status: { $in: SOLD },
       paidAt: { $gte: startOfDay, $lte: endOfDay },
       ...branchMatch,
     };
@@ -125,7 +137,7 @@ export const getDashboardStats = async (req, res, next) => {
     // chart, the payment/category breakdowns, and the "This Month's Sales"
     // stat card.
     const paidMonthMatch = {
-      status: "paid",
+      status: { $in: SOLD },
       paidAt: { $gte: startOfMonth, $lte: endOfMonth },
       ...branchMatch,
     };
@@ -143,7 +155,7 @@ export const getDashboardStats = async (req, res, next) => {
         { $sort: { _id: 1 } },
       ]),
 
-      // Month-to-date total revenue + paid receipt count ("This Month's Sales" card)
+      // Month-to-date total revenue + sold receipt count ("This Month's Sales" card)
       Receipt.aggregate([
         { $match: paidMonthMatch },
         {
@@ -155,10 +167,24 @@ export const getDashboardStats = async (req, res, next) => {
         },
       ]),
 
-      // Payment method breakdown (this month)
+      // Payment method breakdown (this month).
+      // A bill that was ever given on credit is filed under "credit", even
+      // once settled — settlement overwrites paymentMethod with cash/till,
+      // which would otherwise move the sale out of "credit".
       Receipt.aggregate([
         { $match: paidMonthMatch },
-        { $group: { _id: "$paymentMethod", amount: { $sum: "$subtotal" } } },
+        {
+          $addFields: {
+            payKey: {
+              $cond: [
+                { $in: ["credit", { $ifNull: ["$payments.method", []] }] },
+                "credit",
+                "$paymentMethod",
+              ],
+            },
+          },
+        },
+        { $group: { _id: "$payKey", amount: { $sum: "$subtotal" } } },
         { $sort: { amount: -1 } },
       ]),
 
