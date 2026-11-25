@@ -2,6 +2,9 @@
 // Losses, petty cash, day report, till check, staff accountability and audit
 // trail for the Admin Analytics page. Every figure comes from records that
 // already exist: StockAdjustment, PettyCash, VoidRequest, Shift and Receipt.
+//
+// A "sale" is a receipt that is paid OR given on credit, dated by
+// receipt.paidAt (for credit bills: the day the credit was given).
 import mongoose from "mongoose";
 import Receipt from "../models/Receipt.js";
 import StockAdjustment from "../models/StockAdjustment.js";
@@ -16,6 +19,10 @@ import { badRequest } from "../utils/AppError.js";
 
 const { ObjectId } = mongoose.Types;
 const TZ = "Africa/Nairobi";
+
+// Receipt statuses that count as a sale.
+const SOLD = ["paid", "credit"];
+
 const dayStr = (f) => ({ $dateToString: { format: "%Y-%m-%d", date: f, timezone: TZ } });
 const dayKey = (d) => new Date(d).toLocaleDateString("en-CA", { timeZone: TZ }); // YYYY-MM-DD
 const kes = (n) => `KES ${Math.round(n || 0).toLocaleString("en-KE")}`;
@@ -58,7 +65,7 @@ const pettyByDay = (start, end, branch) =>
 
 const belowCostByDay = (match) =>
   Receipt.aggregate([
-    { $match: { status: "paid", ...match } },
+    { $match: { status: { $in: SOLD }, ...match } },
     { $unwind: "$items" },
     { $match: BELOW },
     {
@@ -72,6 +79,10 @@ const belowCostByDay = (match) =>
 
 // Closed shifts: expected cash = opening float + cash sales - petty cash (same
 // formula the shift close screen uses), compared with what the cashier counted.
+//
+// Credit: cash collected on a credit bill only counts toward a shift if it was
+// received before that shift closed — exactly as in shiftController — so a
+// settlement weeks later can't change an old shift's expected cash.
 const loadTillRows = async (branch, start, end) => {
   const shifts = await Shift.find({
     status: "closed",
@@ -85,13 +96,23 @@ const loadTillRows = async (branch, start, end) => {
     .lean();
   if (!shifts.length) return [];
   const ids = shifts.map((s) => s._id);
+  const closedAtById = new Map(shifts.map((s) => [String(s._id), s.closedAt]));
   const [receipts, petty] = await Promise.all([
-    Receipt.find({ shift: { $in: ids }, status: { $in: ["paid", "partial"] } }).select("shift payments").lean(),
+    Receipt.find({ shift: { $in: ids }, status: { $in: ["paid", "partial", "credit"] } }).select("shift payments").lean(),
     PettyCash.find({ shift: { $in: ids } }).select("shift amount").lean(),
   ]);
   const cash = {};
   const out = {};
-  receipts.forEach((r) => (r.payments || []).forEach((p) => { if (p.method === "cash") cash[r.shift] = (cash[r.shift] || 0) + p.amount; }));
+  receipts.forEach((r) => {
+    const payments = r.payments || [];
+    const hasCredit = payments.some((p) => p.method === "credit");
+    const shiftEnd = closedAtById.get(String(r.shift));
+    payments.forEach((p) => {
+      if (p.method !== "cash") return;
+      if (hasCredit && p.paidAt && shiftEnd && new Date(p.paidAt) > new Date(shiftEnd)) return;
+      cash[r.shift] = (cash[r.shift] || 0) + p.amount;
+    });
+  });
   petty.forEach((e) => { out[e.shift] = (out[e.shift] || 0) + e.amount; });
   return shifts.map((s) => {
     const expected = (s.openingFloat || 0) + (cash[s._id] || 0) - (out[s._id] || 0);
@@ -167,9 +188,9 @@ export const getDayReport = async (req, res, next) => {
     const inDay = { $gte: dayStart, $lte: dayEnd };
     logStart("analytics", "Loading day report", { date, branch: branch || "all" });
 
-    const [salesRows, lossRows, pettyRows, adjustments, voids, belowLines] = await Promise.all([
+    const [salesRows, lossRows, pettyRows, adjustments, voids, belowLines, creditRows] = await Promise.all([
       Receipt.aggregate([
-        { $match: { status: "paid", paidAt: { $gte: baseStart, $lte: dayEnd }, ...branchMatch } },
+        { $match: { status: { $in: SOLD }, paidAt: { $gte: baseStart, $lte: dayEnd }, ...branchMatch } },
         { $unwind: "$items" },
         { $lookup: { from: "products", localField: "items.productId", foreignField: "_id", as: "product" } },
         { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
@@ -187,11 +208,18 @@ export const getDayReport = async (req, res, next) => {
         .populate("requestedBy", "fullName").populate("reviewedBy", "fullName")
         .sort({ createdAt: 1 }).lean(),
       Receipt.aggregate([
-        { $match: { status: "paid", paidAt: inDay, ...branchMatch } },
+        { $match: { status: { $in: SOLD }, paidAt: inDay, ...branchMatch } },
         { $unwind: "$items" },
         { $match: BELOW },
         { $sort: { paidAt: 1 } },
         { $project: { billId: 1, paidAt: 1, cashierName: 1, item: "$items" } },
+      ]),
+      // Bills given on credit this day (already part of the day's sales)
+      Receipt.aggregate([
+        { $match: { status: { $in: SOLD }, paidAt: inDay, ...branchMatch } },
+        { $unwind: "$payments" },
+        { $match: { "payments.method": "credit" } },
+        { $group: { _id: null, amount: { $sum: "$payments.amount" }, count: { $sum: 1 } } },
       ]),
     ]);
 
@@ -241,6 +269,8 @@ export const getDayReport = async (req, res, next) => {
       date,
       vatOn: !!vatCfg.enabled,
       sales: r0(t.net),
+      creditGiven: r0(creditRows[0]?.amount),
+      creditCount: creditRows[0]?.count || 0,
       grossProfit: r0(gross),
       stockLoss: r0(stockLoss),
       pettyCash: r0(petty),
@@ -284,14 +314,29 @@ export const getTill = async (req, res, next) => {
   }
 };
 
-// GET /api/analytics/staff  ->  sales, voids and loss reports per person
+// GET /api/analytics/staff  ->  sales, credit given, voids and loss reports per person
 export const getStaff = async (req, res, next) => {
   try {
     const { start, end, branch, branchMatch } = scope(req.query);
     const [salesRows, voids, adjustments] = await Promise.all([
       Receipt.aggregate([
-        { $match: { status: "paid", paidAt: { $gte: start, $lte: end }, ...branchMatch } },
-        { $group: { _id: "$cashierName", sales: { $sum: "$subtotal" } } },
+        { $match: { status: { $in: SOLD }, paidAt: { $gte: start, $lte: end }, ...branchMatch } },
+        {
+          $group: {
+            _id: "$cashierName",
+            sales: { $sum: "$subtotal" },
+            // value of bills this person gave on credit
+            creditGiven: {
+              $sum: {
+                $reduce: {
+                  input: { $ifNull: ["$payments", []] },
+                  initialValue: 0,
+                  in: { $add: ["$$value", { $cond: [{ $eq: ["$$this.method", "credit"] }, "$$this.amount", 0] }] },
+                },
+              },
+            },
+          },
+        },
       ]),
       VoidRequest.find({ status: "approved", createdAt: { $gte: start, $lte: end } })
         .populate({ path: "receipt", select: "branch" }).populate("requestedBy", "fullName").lean(),
@@ -300,8 +345,13 @@ export const getStaff = async (req, res, next) => {
     ]);
 
     const rows = {};
-    const row = (name) => (rows[name] ||= { name, sales: 0, voidCount: 0, voidAmount: 0, lossReports: 0, lossCost: 0 });
-    salesRows.forEach((s) => { if (s._id) row(s._id).sales = s.sales; });
+    const row = (name) => (rows[name] ||= { name, sales: 0, creditGiven: 0, voidCount: 0, voidAmount: 0, lossReports: 0, lossCost: 0 });
+    salesRows.forEach((s) => {
+      if (!s._id) return;
+      const o = row(s._id);
+      o.sales = s.sales;
+      o.creditGiven = s.creditGiven || 0;
+    });
     voids
       .filter((v) => !branch || String(v.receipt?.branch) === String(branch))
       .forEach((v) => {
@@ -316,7 +366,7 @@ export const getStaff = async (req, res, next) => {
     });
 
     const list = Object.values(rows).sort((a, b) => b.sales - a.sales).map((o) => ({
-      ...o, sales: r0(o.sales), voidAmount: r0(o.voidAmount), lossCost: r0(o.lossCost),
+      ...o, sales: r0(o.sales), creditGiven: r0(o.creditGiven), voidAmount: r0(o.voidAmount), lossCost: r0(o.lossCost),
     }));
     const totalSales = sumBy(list, (o) => o.sales);
     res.json({ rows: list, avgVoidRate: totalSales ? (sumBy(list, (o) => o.voidAmount) / totalSales) * 100 : 0 });
@@ -355,7 +405,7 @@ export const getAudit = async (req, res, next) => {
     }
     if (want("Below-cost sale")) {
       const lines = await Receipt.aggregate([
-        { $match: { status: "paid", paidAt: range, ...branchMatch } },
+        { $match: { status: { $in: SOLD }, paidAt: range, ...branchMatch } },
         { $unwind: "$items" },
         { $match: BELOW },
         { $sort: { paidAt: -1 } },
