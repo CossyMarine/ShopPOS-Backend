@@ -12,6 +12,10 @@ import { logStart, logSuccess } from "../utils/requestLogger.js";
 const round2 = (n) => Number(Number(n).toFixed(2));
 const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+// The "credit" entry in receipt.payments records the sale, not money received.
+// Anything summing money collected must skip it.
+const isMoneyEntry = (p) => p.method !== "credit";
+
 // "2026-12-05" -> end of that day in Kenya time, so a bill is only
 // "overdue" once the whole due day has passed.
 const parseDueDate = (value) => {
@@ -56,10 +60,25 @@ export const payOnCredit = async (req, res, next) => {
         throw badRequest("Only a fully unpaid bill can be put on credit");
       }
 
+      const givenAt = new Date();
+
       if (req.shift && !receipt.shift) receipt.shift = req.shift._id;
       receipt.status = "credit";
       receipt.paymentMethod = "credit";
       receipt.mpesaStatus = receipt.mpesaStatus === "pending" ? "idle" : receipt.mpesaStatus;
+
+      // The sale: recorded as a "credit" payment entry for the full bill, and
+      // dated today so revenue/profit/items land on the day the goods left.
+      // amountPaid is left alone — no money has been received yet.
+      receipt.payments.push({
+        amount: receipt.totalDue,
+        method: "credit",
+        reference: `Credit — ${name}`,
+        paidBy: req.user?._id || null,
+        paidAt: givenAt,
+      });
+      receipt.paidAt = givenAt;
+
       await receipt.save({ session });
 
       // Goods have left the shop, so the order is complete (stock was already deducted).
@@ -211,7 +230,9 @@ export const settleCredit = async (req, res, next) => {
 
       const paidAt = new Date();
 
-      // The money enters the normal ledger the day it is collected.
+      // The money enters the ledger the day it is collected, as a normal
+      // cash/till entry. The sale itself was already counted on the day
+      // the credit was given, so this is "money collected", not a new sale.
       receipt.payments.push({
         amount: pay,
         method,
@@ -219,7 +240,10 @@ export const settleCredit = async (req, res, next) => {
         paidBy: req.user?._id || null,
         paidAt,
       });
-      receipt.amountPaid = round2(receipt.payments.reduce((s, p) => s + p.amount, 0));
+      // Money received only — the "credit" entry is not money.
+      receipt.amountPaid = round2(
+        receipt.payments.filter(isMoneyEntry).reduce((s, p) => s + p.amount, 0)
+      );
       if (method === "cash") receipt.cashAmount = round2((receipt.cashAmount || 0) + pay);
       else receipt.tillAmount = round2((receipt.tillAmount || 0) + pay);
 
@@ -238,11 +262,10 @@ export const settleCredit = async (req, res, next) => {
         record.status = "settled";
         record.settledAt = paidAt;
 
-        // Only now does the sale become "paid", so revenue and profit
-        // land on the day the money actually arrived.
+        // The bill is now fully paid. receipt.paidAt is NOT touched: it stays
+        // on the day the credit was given, so the sale keeps its original date.
         receipt.status = "paid";
-        receipt.paidAt = paidAt;
-        const methods = [...new Set(receipt.payments.map((p) => p.method))];
+        const methods = [...new Set(receipt.payments.filter(isMoneyEntry).map((p) => p.method))];
         receipt.paymentMethod = methods.length === 1 ? methods[0] : "both";
         receipt.changeGiven = 0;
       } else {
