@@ -9,6 +9,9 @@
 // already established in revenueController.getDashboardStats, so numbers
 // stay consistent across the app.
 //
+// A "sale" is a receipt that is paid OR given on credit, dated by
+// receipt.paidAt (for credit bills: the day the credit was given).
+//
 // VAT: the breakdowns (overview, category margin) always work on the
 // before-VAT amount (lineNet). When VAT is off that is just lineTotal, so
 // nothing changes. /analytics/vat gives the full VAT picture, and only
@@ -29,6 +32,9 @@ import { badRequest } from "../utils/AppError.js";
 import { vatLineStages, salesStages, OFF_PERIOD_PRICE_BASIS } from "../utils/vatReport.js"; // VAT
 
 const { ObjectId } = mongoose.Types;
+
+// Receipt statuses that count as a sale.
+const SOLD = ["paid", "credit"];
 
 // A product sold zero units in the range is "stuck". A product sold above
 // zero but under half the average units-sold-per-active-product is
@@ -140,7 +146,7 @@ export const getAnalyticsOverview = async (req, res, next) => {
     const sales = salesStages(!!vatCfg.enabled, vatCfg.rate);
 
     const paidMatch = {
-      status: "paid",
+      status: { $in: SOLD },
       paidAt: { $gte: start, $lte: end },
       ...branchMatch,
     };
@@ -512,7 +518,7 @@ export const getCategoryMargin = async (req, res, next) => {
     const sales = salesStages(!!vatCfg.enabled, vatCfg.rate);
 
     const paidMatch = {
-      status: "paid",
+      status: { $in: SOLD },
       paidAt: { $gte: start, $lte: end },
       ...branchMatch,
     };
@@ -590,8 +596,9 @@ export const getDeadStock = async (req, res, next) => {
 
     const [lastSoldAgg, products] = await Promise.all([
       // All-time last sale date per product — not bounded by any range.
+      // Credit sales count: an item sold on credit has moved.
       Receipt.aggregate([
-        { $match: { status: "paid", "items.productId": { $ne: null } } },
+        { $match: { status: { $in: SOLD }, "items.productId": { $ne: null } } },
         { $unwind: "$items" },
         { $match: { "items.productId": { $ne: null } } },
         { $group: { _id: "$items.productId", lastSoldAt: { $max: "$paidAt" } } },
@@ -651,6 +658,7 @@ export const getDeadStock = async (req, res, next) => {
 // VAT switch ON -> full VAT detail for the whole range, including sales
 // made while the switch was off (their VAT split is worked out from the
 // item prices, see utils/vatReport.js).
+// Credit sales are included: VAT is due when the sale is made.
 // ---------------------------------------------------------------------
 export const getVatReport = async (req, res, next) => {
   try {
@@ -662,7 +670,7 @@ export const getVatReport = async (req, res, next) => {
     logStart("analytics", "Loading VAT report", { branch: branch || "all", range });
     const { start, end } = resolveAnalyticsRange(range, from, to);
     const branchMatch = branch ? { branch: new ObjectId(branch) } : {};
-    const paidMatch = { status: "paid", paidAt: { $gte: start, $lte: end }, ...branchMatch };
+    const paidMatch = { status: { $in: SOLD }, paidAt: { $gte: start, $lte: end }, ...branchMatch };
 
     const sums = {
       net: { $sum: "$lineNet" },
