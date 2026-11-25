@@ -71,6 +71,15 @@ const buildPassword = (ts) => {
   return Buffer.from(`${shortcode}${passkey}${ts}`).toString("base64");
 };
 
+// Daraja expects AccountReference / TransactionDesc to be plain
+// alphanumeric text. Strips anything else (e.g. the "#" in "#B0127") and
+// trims to the field's max length.
+const clean = (value, maxLen) =>
+  String(value || "")
+    .replace(/[^A-Za-z0-9 ]/g, "")
+    .trim()
+    .slice(0, maxLen);
+
 // Normalizes 07xx / 01xx / +2547xx / 2547xx -> 2547xxxxxxxx
 export const formatMpesaPhone = (phone) => {
   let p = String(phone || "").replace(/\D/g, "");
@@ -100,8 +109,8 @@ export const stkPush = async ({ phone, amount, accountRef, description }) => {
     PartyB: partyB,
     PhoneNumber: formattedPhone,
     CallBackURL: process.env.MPESA_CALLBACK_URL,
-    AccountReference: (accountRef || "RestoPOS").slice(0, 12),
-    TransactionDesc: (description || "Bill payment").slice(0, 13),
+    AccountReference: clean(accountRef, 12) || "RestoPOS",
+    TransactionDesc: clean(description, 13) || "Bill payment",
   };
 
   const { data } = await axios.post(
