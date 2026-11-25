@@ -300,12 +300,26 @@ export const initiateMpesaPayment = async (req, res, next) => {
       cashAmount,
     });
   } catch (error) {
+    // Log the full Daraja response. error.config.url shows whether the
+    // failure was the OAuth token call or the STK push itself.
+    const upstream = error.response?.data;
+    console.error("[receipt] ❌ Daraja error", {
+      status: error.response?.status,
+      url: error.config?.url,
+      body: upstream,
+    });
+
     // Preserve the M-Pesa-specific rejection reason, same reasoning as
     // walletController.payWithStk.
-    next(new AppError(
-      error.response?.data?.errorMessage || error.message || "Failed to initiate M-Pesa payment",
-      500
-    ));
+    const message =
+      upstream?.errorMessage ||
+      upstream?.ResponseDescription ||
+      upstream?.error_description ||
+      error.message ||
+      "Failed to initiate M-Pesa payment";
+
+    // 502 when Daraja itself answered with an error, 500 for everything else.
+    next(new AppError(message, error.response ? 502 : 500));
   }
 };
 
