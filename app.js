@@ -42,6 +42,7 @@ import reminderRoutes from "./routes/reminderRoutes.js";
 import supplierRoutes from "./routes/supplierRoutes.js";
 import goodsReceiptRoutes from "./routes/goodsReceiptRoutes.js";
 import displayRoutes from "./routes/displayRoutes.js";
+import creditRoutes from "./routes/creditRoutes.js";
 
 dotenv.config();
 
@@ -124,6 +125,7 @@ app.use("/api/reminders", reminderRoutes);
 app.use("/api/suppliers", supplierRoutes);
 app.use("/api/goods-receipts", goodsReceiptRoutes);
 app.use("/api/display", displayRoutes);
+app.use("/api/credits", creditRoutes);
 
 /* =================================================
    404 + ERROR HANDLING
