@@ -4,7 +4,10 @@
 // and totals are done here (in the store's own timezone, from Settings), so
 // the browser never downloads raw receipts.
 //
-// Customers = number of paid receipts (126 receipts = 126 customers).
+// Customers = number of sold receipts (126 receipts = 126 customers).
+// A sale is a receipt that is "paid" OR given on "credit". Both are dated by
+// receipt.paidAt — for credit bills that is the day the credit was GIVEN, so
+// revenue, profit and items land on the day the goods left the shop.
 
 import mongoose from "mongoose";
 import Receipt from "../models/Receipt.js";
@@ -13,12 +16,16 @@ import Branch from "../models/Branch.js";
 import VoidRequest from "../models/VoidRequest.js";
 import WageProfile from "../models/WageProfile.js";
 import AdminSettings from "../models/AdminSettings.js";
+import CreditRecord from "../models/CreditRecord.js";
 import { estimateMonthlyGross } from "./payrollController.js";
 import { costEstimationStages } from "./analyticsController.js";
 import { logStart, logSuccess } from "../utils/requestLogger.js";
 import { badRequest, forbidden } from "../utils/AppError.js";
 
 const { ObjectId } = mongoose.Types;
+
+// Receipt statuses that count as a sale.
+const SOLD = ["paid", "credit"];
 
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const RANGES = ["today", "week", "month", "year", "all"];
@@ -157,7 +164,7 @@ export const getDashboard = async (req, res, next) => {
 
     let earliest = nowRef;
     if (key === "all") {
-      const first = await Receipt.findOne({ status: "paid", paidAt: { $ne: null }, ...branchMatch })
+      const first = await Receipt.findOne({ status: { $in: SOLD }, paidAt: { $ne: null }, ...branchMatch })
         .sort({ paidAt: 1 }).select("paidAt").lean();
       if (first?.paidAt) {
         const fp = parts(first.paidAt, tz);
@@ -177,8 +184,8 @@ export const getDashboard = async (req, res, next) => {
     const V = prevRef ? buildPeriod(key, prevRef, false, ctx) : null;
 
     const windowStart = V ? V.start : C.start;
-    const winMatch = { status: "paid", paidAt: { $gte: windowStart, $lte: C.end }, ...branchMatch };
-    const curMatch = { status: "paid", paidAt: { $gte: C.start, $lte: C.end }, ...branchMatch };
+    const winMatch = { status: { $in: SOLD }, paidAt: { $gte: windowStart, $lte: C.end }, ...branchMatch };
+    const curMatch = { status: { $in: SOLD }, paidAt: { $gte: C.start, $lte: C.end }, ...branchMatch };
     const todayStart = zoned(tz, nowRef.y, nowRef.m, nowRef.d);
     const todayEnd = new Date(zoned(tz, nowRef.y, nowRef.m, nowRef.d + 1).getTime() - 1);
 
@@ -193,7 +200,7 @@ export const getDashboard = async (req, res, next) => {
 
     const [
       revRows, profRows, payRows, heatRows, topRows, branchRows, recent, voidedRows,
-      pendingVoidRows, pendingPayRows, lowRows, wageProfiles,
+      pendingVoidRows, pendingPayRows, lowRows, wageProfiles, creditOwedRows, creditCollectedRows,
     ] = await Promise.all([
       // revenue + receipts (customers) per bucket, current AND previous period
       Receipt.aggregate([
@@ -206,9 +213,13 @@ export const getDashboard = async (req, res, next) => {
         ...costEstimationStages(),
         { $group: { _id: gid, revenue: { $sum: "$items.lineTotal" }, cost: { $sum: "$lineCost" } } },
       ]),
-      // Payment methods — from the payments[] entries, so a split bill
-      // (cash + M-Pesa STK, etc.) is counted under each method it was paid
-      // with, in the amounts customers actually paid (VAT included).
+      // Payment methods — how the period's SALES were paid, from payments[].
+      // A split bill (cash + M-Pesa STK, etc.) is counted under each method it
+      // was paid with, in the amounts customers actually paid (VAT included).
+      // A bill given on credit is counted ONCE, as "credit", for its full
+      // amount: its later cash/till settlements are money collected, not a
+      // second sale, so they are left out of this mix (they show in the
+      // credit.collected figure instead).
       // Receipts with an empty payments[] (older data) fall back to their
       // single paymentMethod and totalDue.
       Receipt.aggregate([
@@ -216,7 +227,9 @@ export const getDashboard = async (req, res, next) => {
         { $facet: {
           split: [
             { $match: { "payments.0": { $exists: true } } },
+            { $addFields: { hasCredit: { $in: ["credit", "$payments.method"] } } },
             { $unwind: "$payments" },
+            { $match: { $expr: { $or: [{ $not: ["$hasCredit"] }, { $eq: ["$payments.method", "credit"] }] } } },
             { $group: { _id: "$payments.method", amount: { $sum: "$payments.amount" } } },
           ],
           legacy: [
@@ -290,6 +303,18 @@ export const getDashboard = async (req, res, next) => {
         } },
       ]),
       WageProfile.find(branch ? { branch: new ObjectId(branch) } : {}).populate("user", "isActive").lean(),
+      // credit still owed by customers right now (not range-bound)
+      CreditRecord.aggregate([
+        { $match: { status: { $in: ["open", "partial"] }, ...branchMatch } },
+        { $group: { _id: null, owing: { $sum: { $subtract: ["$amount", "$amountPaid"] } }, count: { $sum: 1 } } },
+      ]),
+      // credit money collected inside this period
+      CreditRecord.aggregate([
+        { $match: { ...branchMatch } },
+        { $unwind: "$settlements" },
+        { $match: { "settlements.paidAt": { $gte: C.start, $lte: C.end } } },
+        { $group: { _id: null, amount: { $sum: "$settlements.amount" } } },
+      ]),
     ]);
 
     /* ----- series ----- */
@@ -326,6 +351,17 @@ export const getDashboard = async (req, res, next) => {
     const payments = [...payTotals]
       .map(([method, amount]) => ({ method, amount: Math.round(amount) }))
       .sort((a, b) => b.amount - a.amount);
+
+    /* ----- credit -----
+       given       = bills given on credit in this period (sales, not cash)
+       collected   = credit settlements received in this period (cash/till)
+       outstanding = still owed by customers right now */
+    const credit = {
+      given: Math.round(payTotals.get("credit") || 0),
+      collected: Math.round(creditCollectedRows[0]?.amount || 0),
+      outstanding: Math.round(creditOwedRows[0]?.owing || 0),
+      outstandingCount: creditOwedRows[0]?.count || 0,
+    };
 
     /* ----- heat map -----
        Sales inside opening hours fill the grid. Sales before opening or
@@ -371,6 +407,7 @@ export const getDashboard = async (req, res, next) => {
       },
       deltas,
       payments,
+      credit,
       heat,
       heatOutside,
       topItems: topRows.map((i) => ({ productName: i.productName, unitsSold: i.unitsSold, revenue: Math.round(i.revenue) })),
