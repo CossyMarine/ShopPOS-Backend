@@ -98,7 +98,7 @@ const receiptSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["unpaid", "partial", "paid", "voided"],
+      enum: ["unpaid", "partial", "paid", "voided", "credit"],
       default: "unpaid",
     },
 
@@ -115,6 +115,7 @@ const receiptSchema = new mongoose.Schema(
         "manual_till",
         "reward",
         "both",
+        "credit",
         null,
       ],
       default: null,
