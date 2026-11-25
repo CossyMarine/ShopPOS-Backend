@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import Receipt from "../models/Receipt.js";
 import Order from "../models/Order.js";
 import VoidRequest from "../models/VoidRequest.js";
+import CreditRecord from "../models/CreditRecord.js";
 import { restockItems } from "../utils/productStock.js";
 import { buildOrderVat } from "../utils/vat.js";
 import { notFound, badRequest } from "../utils/AppError.js";
@@ -58,6 +59,14 @@ export const createVoidRequest = async (req, res, next) => {
     }
     if (receipt.status === "voided") {
       return res.status(400).json({ message: "Receipt is already voided" });
+    }
+    if (receipt.status === "credit") {
+      if ((receipt.amountPaid || 0) > 0) {
+        return res.status(400).json({ message: "This credit bill already has payments recorded, so it can't be voided" });
+      }
+      if (Array.isArray(items) && items.length > 0 && items.length < receipt.items.length) {
+        return res.status(400).json({ message: "Credit bills can only be voided in full" });
+      }
     }
 
     const existingPending = await VoidRequest.findOne({ receipt: receiptId, status: "pending" });
@@ -146,6 +155,10 @@ export const approveVoidRequest = async (req, res, next) => {
       receipt = await Receipt.findById(voidRequest.receipt).session(session);
       if (!receipt) throw notFound("Receipt");
 
+      if (receipt.status === "credit" && (receipt.amountPaid || 0) > 0) {
+        throw badRequest("A payment was recorded on this credit bill after the request. It can't be voided.");
+      }
+
       const now = new Date();
       const restockNote = `Restocked from voided bill ${receipt.billId}`;
 
@@ -204,6 +217,11 @@ export const approveVoidRequest = async (req, res, next) => {
         receipt.voidedAt = now;
         await receipt.save({ session });
         await restockItems(receipt.items, restockNote, reviewedBy, { session });
+        await CreditRecord.updateOne(
+          { receipt: receipt._id, status: { $in: ["open", "partial"] } },
+          { status: "voided", voidedAt: now },
+          { session }
+        );
       }
     });
   } catch (error) {
