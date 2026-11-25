@@ -7,6 +7,7 @@ import Receipt from "../models/Receipt.js";
 import { applyPaymentToReceipt } from "../utils/walletPayments.js";
 import { getDateRangePreset } from "../utils/dateHelpers.js";
 import { logStart, logSuccess } from "../utils/requestLogger.js";
+import CreditRecord from "../models/CreditRecord.js";
 
 // Builds a Mongo range from either a named preset (Kenya/EAT-anchored,
 // via utils/dateHelpers.js) or explicit from/to ISO dates from the calendar picker.
@@ -127,44 +128,111 @@ export const getTransactions = async (req, res, next) => {
 export const getPaymentSummary = async (req, res, next) => {
   try {
     const { from, to, preset, branch } = req.query;
-    logStart("payment", "Loading payment summary", { preset, from, to, branch });
+
+    logStart("payment", "Loading payment summary", {
+      preset,
+      from,
+      to,
+      branch,
+    });
 
     const dateRange = resolveDateRange({ preset, from, to });
 
     const pipeline = [];
-    if (branch) pipeline.push({ $match: { branch: new mongoose.Types.ObjectId(branch) } });
+
+    if (branch) {
+      pipeline.push({
+        $match: { branch: new mongoose.Types.ObjectId(branch) },
+      });
+    }
+
     pipeline.push({ $unwind: "$payments" });
-    if (dateRange) pipeline.push({ $match: { "payments.paidAt": dateRange } });
+
+    if (dateRange) {
+      pipeline.push({ $match: { "payments.paidAt": dateRange } });
+    }
 
     pipeline.push({
       $group: {
         _id: null,
+
         totalMoney: { $sum: "$payments.amount" },
+
         totalCash: {
-          $sum: { $cond: [{ $eq: ["$payments.method", "cash"] }, "$payments.amount", 0] },
-        },
-        totalReward: {
-          $sum: { $cond: [{ $eq: ["$payments.method", "reward"] }, "$payments.amount", 0] },
-        },
-        // Till = anything paid to a business till/paybill number and reconciled
-        // manually by staff (Buy Goods, Paybill, Pochi la Biashara, manual entry)
-        totalTill: {
           $sum: {
             $cond: [
-              { $in: ["$payments.method", ["mpesa_till", "manual_till", "mpesa_pochi", "mpesa_paybill"]] },
+              { $eq: ["$payments.method", "cash"] },
               "$payments.amount",
               0,
             ],
           },
         },
-        // Prompt = STK push, the automated pay-prompt sent to the customer's phone
+
+        totalReward: {
+          $sum: {
+            $cond: [
+              { $eq: ["$payments.method", "reward"] },
+              "$payments.amount",
+              0,
+            ],
+          },
+        },
+
+        // Till payments
+        totalTill: {
+          $sum: {
+            $cond: [
+              {
+                $in: [
+                  "$payments.method",
+                  ["mpesa_till", "manual_till", "mpesa_pochi", "mpesa_paybill"],
+                ],
+              },
+              "$payments.amount",
+              0,
+            ],
+          },
+        },
+
+        // STK push payments
         totalPrompt: {
-          $sum: { $cond: [{ $eq: ["$payments.method", "mpesa_stk"] }, "$payments.amount", 0] },
+          $sum: {
+            $cond: [
+              { $eq: ["$payments.method", "mpesa_stk"] },
+              "$payments.amount",
+              0,
+            ],
+          },
         },
       },
     });
 
-    const [result] = await Receipt.aggregate(pipeline);
+    // Calculate outstanding credit balance
+    const creditMatch = {
+      status: { $in: ["open", "partial"] },
+    };
+
+    if (branch) {
+      creditMatch.branch = new mongoose.Types.ObjectId(branch);
+    }
+
+    const [[result], [creditAgg]] = await Promise.all([
+      Receipt.aggregate(pipeline),
+
+      CreditRecord.aggregate([
+        { $match: creditMatch },
+        {
+          $group: {
+            _id: null,
+            owing: {
+              $sum: {
+                $subtract: ["$amount", "$amountPaid"],
+              },
+            },
+          },
+        },
+      ]),
+    ]);
 
     const summary = {
       totalMoney: result?.totalMoney || 0,
@@ -172,9 +240,11 @@ export const getPaymentSummary = async (req, res, next) => {
       totalReward: result?.totalReward || 0,
       totalTill: result?.totalTill || 0,
       totalPrompt: result?.totalPrompt || 0,
+      creditOutstanding: creditAgg?.owing || 0,
     };
 
     logSuccess("payment", "Payment summary loaded", summary);
+
     res.json(summary);
   } catch (error) {
     next(error);
