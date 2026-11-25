@@ -11,6 +11,8 @@ const branchSchema = new mongoose.Schema(
     manager:   { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     tillNumber: { type: String, default: null, trim: true },
     tillName:   { type: String, default: null, trim: true },
+    allowCredit: { type: Boolean, default: false }, // admin toggles credit sales per branch
+    
   },
   { timestamps: true }
 );
