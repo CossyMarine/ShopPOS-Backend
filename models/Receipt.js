@@ -4,6 +4,11 @@ import { orderItemSchema } from "./Order.js";
 
 // One entry per payment towards a bill — supports partial payments,
 // multiple methods on the same bill, and a full audit trail.
+//
+// method "credit" is special: it records that the bill was given on credit
+// (the sale), for the full totalDue. It is NOT money received, so it is never
+// counted in amountPaid, cash, till or "total money" figures. Money collected
+// later is added as normal cash/till entries.
 const paymentEntrySchema = new mongoose.Schema(
   {
     amount: { type: Number, required: true },
@@ -18,6 +23,7 @@ const paymentEntrySchema = new mongoose.Schema(
         "manual_till",
         "reward",
         "both",
+        "credit",
       ],
       required: true,
     },
@@ -96,6 +102,8 @@ const receiptSchema = new mongoose.Schema(
       default: null,
     },
 
+    // "credit" = given on credit and still being paid off. It counts as a
+    // sale from the day it was given; it becomes "paid" once fully settled.
     status: {
       type: String,
       enum: ["unpaid", "partial", "paid", "voided", "credit"],
@@ -121,7 +129,8 @@ const receiptSchema = new mongoose.Schema(
       default: null,
     },
 
-    // Running total received across all payments
+    // Running total of MONEY received across all payments.
+    // The "credit" entry in `payments` is not money and is excluded.
     amountPaid: {
       type: Number,
       default: null,
@@ -270,6 +279,9 @@ const receiptSchema = new mongoose.Schema(
       default: null,
     },
 
+    // The sale date used by every report. For normal bills it is when the
+    // bill became fully paid. For credit bills it is the day the credit was
+    // GIVEN, and it is not moved when the customer later settles.
     paidAt: {
       type: Date,
       default: null,
