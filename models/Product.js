@@ -32,6 +32,19 @@ const packSchema = new mongoose.Schema(
   { _id: true }
 );
 
+// A portion = a way to sell LESS than one base unit (½ kg, ¼ kg, half bar...).
+// qty = how much of the base unit ONE portion uses (e.g. 0.25 for ¼ kg).
+// Stock is still held in base units; a portion sale just deducts qty from it.
+const portionSchema = new mongoose.Schema(
+  {
+    name:    { type: String, required: true, trim: true },
+    qty:     { type: Number, required: true, min: 0.001 },
+    price:   { type: Number, required: true, min: 0 },   // selling price per ONE portion
+    barcode: { type: String, trim: true, default: null },
+  },
+  { _id: true }
+);
+
 const productSchema = new mongoose.Schema(
   {
     name:        { type: String, required: true, trim: true },
@@ -42,6 +55,7 @@ const productSchema = new mongoose.Schema(
 
     // NEW
     packs:        [packSchema],
+    portions:     { type: [portionSchema], default: [] }, // empty = a normal product
     sku:          { type: String, trim: true, default: "" },
     description:  { type: String, trim: true, default: "" },
     maxLevel:     { type: Number, default: 0 },
@@ -69,6 +83,9 @@ const productSchema = new mongoose.Schema(
 
 productSchema.index({ branch: 1, barcode: 1 }, { unique: true, sparse: true });
 productSchema.index({ branch: 1, caseBarcode: 1 }, { unique: true, sparse: true });
+// Lookup speed only. Uniqueness of portion barcodes is enforced in productController's checkCodes
+// (a unique index here would clash on the many portions that have no barcode).
+productSchema.index({ branch: 1, "portions.barcode": 1 });
 
 // Products created through the old fields (e.g. by stock transfers) get a pack automatically.
 productSchema.pre("validate", function (next) {
