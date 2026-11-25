@@ -1,7 +1,12 @@
 // controllers/paymentController.js
 // Powers the admin/branch "Payments" page: a flat, filterable/searchable feed of every
-// payment ever recorded (cash, till, STK, reward...) plus the queue of
+// payment ever recorded (cash, till, STK, reward, credit given...) plus the queue of
 // customer-submitted manual-till payments still waiting for staff confirmation.
+//
+// Credit: a bill given on credit has a "credit" entry in payments[] — it records the
+// SALE, not money received. It shows in the feed, but is excluded from "Total Money".
+// Money collected later arrives as normal cash/till entries (and is tracked
+// separately as creditCollected in the summary).
 import mongoose from "mongoose";
 import Receipt from "../models/Receipt.js";
 import { applyPaymentToReceipt } from "../utils/walletPayments.js";
@@ -27,6 +32,7 @@ const resolveDateRange = ({ preset, from, to }) => {
 
 // @desc    Flattened, paginated list of individual payment entries across all
 //          bills — filterable by method/branch, searchable by bill/cashier/reference/payer.
+//          method=credit lists the bills given on credit.
 // @route   GET /api/payments/transactions?page=1&limit=15&method=cash&branch=&q=&from=&to=&preset=
 // @access  Protected — admin, branchManager (auto-scoped to own branch via sameBranch)
 export const getTransactions = async (req, res, next) => {
@@ -118,11 +124,17 @@ export const getTransactions = async (req, res, next) => {
 };
 
 // @desc    Summary totals for the Payments dashboard cards — Total Money,
-//          Total Cash, Paid using Reward, Till, Prompt — over a date range,
-//          optionally scoped to one branch.
+//          Total Cash, Paid using Reward, Till, Prompt, Credit — over a date
+//          range, optionally scoped to one branch.
 //          ?preset=today|this_week|last_7_days|this_month|last_30_days is
 //          Kenya/EAT-anchored (see utils/dateHelpers.js); or pass explicit
 //          ?from=&to= ISO dates for a custom calendar range.
+//
+//          totalMoney = money actually received (credit given is NOT money).
+//          totalCredit = bills given on credit in the range (sales, not cash).
+//          creditCollected = credit settlements received in the range (already
+//          included in cash/till/totalMoney — shown so it can be told apart).
+//          creditOutstanding = what customers still owe right now.
 // @route   GET /api/payments/summary
 // @access  Protected — admin, branchManager
 export const getPaymentSummary = async (req, res, next) => {
@@ -156,7 +168,16 @@ export const getPaymentSummary = async (req, res, next) => {
       $group: {
         _id: null,
 
-        totalMoney: { $sum: "$payments.amount" },
+        // Money received only — the "credit" entry is a sale, not money.
+        totalMoney: {
+          $sum: {
+            $cond: [
+              { $ne: ["$payments.method", "credit"] },
+              "$payments.amount",
+              0,
+            ],
+          },
+        },
 
         totalCash: {
           $sum: {
@@ -204,19 +225,39 @@ export const getPaymentSummary = async (req, res, next) => {
             ],
           },
         },
+
+        // Bills given on credit in the range
+        totalCredit: {
+          $sum: {
+            $cond: [
+              { $eq: ["$payments.method", "credit"] },
+              "$payments.amount",
+              0,
+            ],
+          },
+        },
       },
     });
 
-    // Calculate outstanding credit balance
+    const branchMatch = branch ? { branch: new mongoose.Types.ObjectId(branch) } : {};
+
+    // Outstanding credit balance (right now, not range-bound)
     const creditMatch = {
       status: { $in: ["open", "partial"] },
+      ...branchMatch,
     };
 
-    if (branch) {
-      creditMatch.branch = new mongoose.Types.ObjectId(branch);
-    }
+    // Credit settlements received inside the range
+    const collectedPipeline = [
+      { $match: branchMatch },
+      { $unwind: "$settlements" },
+    ];
+    if (dateRange) collectedPipeline.push({ $match: { "settlements.paidAt": dateRange } });
+    collectedPipeline.push({
+      $group: { _id: null, collected: { $sum: "$settlements.amount" } },
+    });
 
-    const [[result], [creditAgg]] = await Promise.all([
+    const [[result], [creditAgg], [collectedAgg]] = await Promise.all([
       Receipt.aggregate(pipeline),
 
       CreditRecord.aggregate([
@@ -232,6 +273,8 @@ export const getPaymentSummary = async (req, res, next) => {
           },
         },
       ]),
+
+      CreditRecord.aggregate(collectedPipeline),
     ]);
 
     const summary = {
@@ -240,6 +283,8 @@ export const getPaymentSummary = async (req, res, next) => {
       totalReward: result?.totalReward || 0,
       totalTill: result?.totalTill || 0,
       totalPrompt: result?.totalPrompt || 0,
+      totalCredit: result?.totalCredit || 0,
+      creditCollected: collectedAgg?.collected || 0,
       creditOutstanding: creditAgg?.owing || 0,
     };
 
@@ -329,6 +374,18 @@ export const confirmManualPayment = async (req, res, next) => {
     if (!receipt) {
       console.warn(`[payment] ⚠️ Bill not found: ${receiptId}`);
       return res.status(404).json({ message: "Bill not found" });
+    }
+
+    // A bill that went on credit (or was voided) after the customer submitted
+    // this claim must not take a normal payment — credit bills are paid only
+    // through credit settlement.
+    if (receipt.status === "credit" || receipt.status === "voided") {
+      return res.status(400).json({
+        message:
+          receipt.status === "credit"
+            ? "This bill is on credit. Record the payment as a credit settlement instead."
+            : "This bill was voided, so the payment can't be applied.",
+      });
     }
 
     const entry = receipt.pendingManualPayments.id(paymentId);
