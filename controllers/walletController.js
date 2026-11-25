@@ -264,13 +264,27 @@ export const payWithStk = async (req, res, next) => {
       checkoutRequestId: stkRes.CheckoutRequestID,
     });
   } catch (error) {
+    // Log the full Daraja response. error.config.url shows whether the
+    // failure was the OAuth token call or the STK push itself.
+    const upstream = error.response?.data;
+    console.error("[wallet] ❌ Daraja error", {
+      status: error.response?.status,
+      url: error.config?.url,
+      body: upstream,
+    });
+
     // Preserve the M-Pesa-specific rejection reason (e.g. insufficient
-    // balance, invalid phone) instead of letting it flatten to a generic
-    // 500 — this message is the whole point of the failure response.
-    next(new AppError(
-      error.response?.data?.errorMessage || error.message || "Failed to initiate payment",
-      500
-    ));
+    // balance, invalid phone) instead of flattening it to a generic message —
+    // this message is the whole point of the failure response.
+    const message =
+      upstream?.errorMessage ||
+      upstream?.ResponseDescription ||
+      upstream?.error_description ||
+      error.message ||
+      "Failed to initiate payment";
+
+    // 502 when Daraja itself answered with an error, 500 for everything else.
+    next(new AppError(message, error.response ? 502 : 500));
   }
 };
 
