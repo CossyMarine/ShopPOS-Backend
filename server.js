@@ -8,8 +8,10 @@ import cron from "node-cron";
 import jwt from "jsonwebtoken";
 import { applyDuePriceSchedules } from "./utils/applyScheduledPriceChanges.js";
 import { getDisplayState } from "./utils/displayState.js";
+import { checkMpesaConfig } from "./utils/mpesa.js";
 
 dotenv.config();
+checkMpesaConfig();
 
 /* ========================================
    🛡️ SENTRY
