@@ -30,6 +30,8 @@ import {
   validateInitiateMpesaPayment,
   validateAddItemsToReceipt,
 } from "../Middlewares/validators/receiptValidators.js";
+import { payOnCredit } from "../controllers/creditController.js";
+import { validatePayOnCredit } from "../Middlewares/validators/creditValidators.js";
 import { validate } from "../Middlewares/validate.js";
 
 // Stops a stuck button or a bad actor from spamming customers' phones with prompts.
@@ -74,4 +76,5 @@ router.get("/history", protect, posStaff, getReceiptHistory);
 
 router.get("/:id", protect, validateReceiptId, validate, getReceiptById);
 
+router.patch("/:id/pay/credit", protect, posStaff, requireOpenShift, validatePayOnCredit, validate, payOnCredit);
 export default router;
