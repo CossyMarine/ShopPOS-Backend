@@ -7,8 +7,28 @@ const BASE_URL = isProd
   ? "https://api.safaricom.co.ke"
   : "https://sandbox.safaricom.co.ke";
 
+const HTTP_TIMEOUT = 15000; // never let a hung Daraja call freeze a checkout
+
 let cachedToken = null;
 let cachedTokenExpiry = 0;
+
+// Call once at startup: tells you immediately if something is missing,
+// instead of failing at the first real sale.
+export const checkMpesaConfig = () => {
+  const required = [
+    "MPESA_CONSUMER_KEY", "MPESA_CONSUMER_SECRET",
+    "MPESA_SHORTCODE", "MPESA_PASSKEY", "MPESA_CALLBACK_URL",
+  ];
+  const missing = required.filter((k) => !process.env[k]);
+  if (missing.length) {
+    console.warn(`⚠️  M-Pesa not fully configured. Missing: ${missing.join(", ")}`);
+    return;
+  }
+  if (isProd && !/^https:\/\//.test(process.env.MPESA_CALLBACK_URL)) {
+    console.warn("⚠️  MPESA_CALLBACK_URL must be a public HTTPS URL in production");
+  }
+  console.log(`✅ M-Pesa configured (${isProd ? "PRODUCTION" : "sandbox"})`);
+};
 
 export const getAccessToken = async () => {
   if (cachedToken && Date.now() < cachedTokenExpiry) return cachedToken;
@@ -24,7 +44,7 @@ export const getAccessToken = async () => {
 
   const { data } = await axios.get(
     `${BASE_URL}/oauth/v1/generate?grant_type=client_credentials`,
-    { headers: { Authorization: `Basic ${auth}` } }
+    { headers: { Authorization: `Basic ${auth}` }, timeout: HTTP_TIMEOUT }
   );
 
   cachedToken = data.access_token;
@@ -64,7 +84,10 @@ export const formatMpesaPhone = (phone) => {
 export const stkPush = async ({ phone, amount, accountRef, description }) => {
   const token = await getAccessToken();
   const ts = timestamp();
-  const shortcode = process.env.MPESA_SHORTCODE;
+  const shortcode = process.env.MPESA_SHORTCODE; // Store number (builds the password)
+  // Till number that receives the money. Only set MPESA_TILL_NUMBER if it
+  // differs from the store number; otherwise it falls back to the shortcode.
+  const partyB = process.env.MPESA_TILL_NUMBER || shortcode;
   const formattedPhone = formatMpesaPhone(phone);
 
   const payload = {
@@ -74,7 +97,7 @@ export const stkPush = async ({ phone, amount, accountRef, description }) => {
     TransactionType: process.env.MPESA_TRANSACTION_TYPE || "CustomerBuyGoodsOnline",
     Amount: Math.max(1, Math.ceil(amount)),
     PartyA: formattedPhone,
-    PartyB: shortcode,
+    PartyB: partyB,
     PhoneNumber: formattedPhone,
     CallBackURL: process.env.MPESA_CALLBACK_URL,
     AccountReference: (accountRef || "RestoPOS").slice(0, 12),
@@ -84,7 +107,7 @@ export const stkPush = async ({ phone, amount, accountRef, description }) => {
   const { data } = await axios.post(
     `${BASE_URL}/mpesa/stkpush/v1/processrequest`,
     payload,
-    { headers: { Authorization: `Bearer ${token}` } }
+    { headers: { Authorization: `Bearer ${token}` }, timeout: HTTP_TIMEOUT }
   );
 
   return data; // { MerchantRequestID, CheckoutRequestID, ResponseCode, ResponseDescription, ... }
@@ -105,7 +128,7 @@ export const stkQuery = async (checkoutRequestId) => {
   const { data } = await axios.post(
     `${BASE_URL}/mpesa/stkpushquery/v1/query`,
     payload,
-    { headers: { Authorization: `Bearer ${token}` } }
+    { headers: { Authorization: `Bearer ${token}` }, timeout: HTTP_TIMEOUT }
   );
 
   return data; // { ResultCode, ResultDesc, ... }
