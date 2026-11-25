@@ -188,6 +188,40 @@ const finalizeMpesaFailure = async ({ receipt, resultDesc, io }) => {
   console.warn(`[receipt] ⚠️ M-Pesa payment failed for receipt ${receipt._id}: ${receipt.mpesaResultDesc}`);
 };
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Atomically claim a pending STK so only ONE caller (callback or status poll)
+// settles it. Returns the claimed receipt, or null if someone else already did.
+const claimPendingStk = (checkoutRequestId, newStatus) =>
+  Receipt.findOneAndUpdate(
+    {
+      mpesaCheckoutRequestId: checkoutRequestId,
+      mpesaStatus: "pending",
+      status: { $in: ["unpaid", "partial"] },
+    },
+    { $set: { mpesaStatus: newStatus } },
+    { new: true }
+  );
+
+// Run a finalizer on a claimed receipt. If it throws before the bill got paid,
+// put the receipt back to "pending" so the next status poll can retry.
+const finalizeClaimed = async (receipt, fn) => {
+  try {
+    await fn(receipt);
+  } catch (err) {
+    await Receipt.updateOne(
+      { _id: receipt._id, status: { $in: ["unpaid", "partial"] } },
+      { $set: { mpesaStatus: "pending" } }
+    );
+    throw err;
+  }
+};
+
+const finalizeSuccessFor = (receipt, mpesaReceiptNumber, io) =>
+  receipt.mpesaSource === "wallet"
+    ? finalizeWalletMpesaSuccess({ receipt, mpesaReceiptNumber, io })
+    : finalizeMpesaSuccess({ receipt, mpesaReceiptNumber, io });
+
 // @desc    Trigger an STK push ("Prompt"). cashAmount = 0 for prompt-only, or
 //          a partial amount for a split "both" payment (prompt covers the rest).
 // @route   POST /api/receipts/:id/mpesa/initiate
@@ -279,50 +313,68 @@ export const initiateMpesaPayment = async (req, res, next) => {
 // @route   POST /api/receipts/mpesa/callback
 // @access  Public (Safaricom webhook)
 export const mpesaCallback = async (req, res) => {
-  // NOTE: intentionally NOT converted to next(error) — this is a Safaricom
-  // webhook and must always return 200, regardless of outcome. Returning a
-  // non-200 (which the centralized errorHandler would do) makes Daraja
-  // retry the callback, risking a double-apply of the payment. Keep this
-  // route's own try/catch and always respond 200.
-  try {
-    const callback = req.body?.Body?.stkCallback;
-    if (!callback) {
-      console.warn("[receipt] ⚠️ M-Pesa callback received with no stkCallback body — ignored");
-      return res.status(200).json({ message: "Ignored" });
-    }
+  // Always answer 200 immediately: Safaricom retries on anything else, and
+  // slow replies get treated as failures. Real work happens after replying.
+  const callback = req.body?.Body?.stkCallback;
+  res.status(200).json({ message: "Received" });
 
+  if (!callback) {
+    console.warn("[receipt] ⚠️ M-Pesa callback with no stkCallback body — ignored");
+    return;
+  }
+
+  try {
     const { CheckoutRequestID, ResultCode, ResultDesc, CallbackMetadata } = callback;
     logStart("receipt", "M-Pesa callback received", { CheckoutRequestID, ResultCode, ResultDesc });
 
-    const receipt = await Receipt.findOne({ mpesaCheckoutRequestId: CheckoutRequestID });
+    const receipt = await Receipt.findOne({
+      mpesaCheckoutRequestId: CheckoutRequestID,
+      mpesaStatus: "pending",
+    });
     if (!receipt || !["unpaid", "partial"].includes(receipt.status)) {
-      console.warn(`[receipt] ⚠️ Callback for ${CheckoutRequestID} — receipt not found or already settled`);
-      return res.status(200).json({ message: "Receipt not found or already settled" });
+      console.warn(`[receipt] ⚠️ Callback for ${CheckoutRequestID} — not pending or already settled`);
+      return;
+    }
+
+    // The callback body is NOT trusted (the route is public). Ask Daraja
+    // directly; retry a few times because the query can lag the callback.
+    let verified = null;
+    for (let attempt = 1; attempt <= 4 && !verified; attempt++) {
+      try {
+        const q = await stkQuery(CheckoutRequestID);
+        if (!isNaN(Number(q.ResultCode))) verified = q;
+      } catch (e) {
+        console.warn(`[receipt] ⚠️ Verify attempt ${attempt} failed:`, e.response?.data || e.message);
+      }
+      if (!verified && attempt < 4) await sleep(3000);
+    }
+    if (!verified) {
+      console.error(`[receipt] ❌ Could not verify ${CheckoutRequestID} with Daraja. Left pending; the status poll will settle it.`);
+      return;
     }
 
     const io = req.app.get("io");
 
-    if (Number(ResultCode) === 0) {
-      const items = CallbackMetadata?.Item || [];
-      const receiptNumberItem = items.find((i) => i.Name === "MpesaReceiptNumber");
-      const mpesaReceiptNumber = receiptNumberItem?.Value || null;
-
-      if (receipt.mpesaSource === "wallet") {
-        await finalizeWalletMpesaSuccess({ receipt, mpesaReceiptNumber, io });
-      } else {
-        await finalizeMpesaSuccess({ receipt, mpesaReceiptNumber, io });
-      }
+    if (Number(verified.ResultCode) === 0) {
+      const claimed = await claimPendingStk(CheckoutRequestID, "success");
+      if (!claimed) return; // status poll already settled it
+      const mpesaReceiptNumber =
+        (CallbackMetadata?.Item || []).find((i) => i.Name === "MpesaReceiptNumber")?.Value || null;
+      await finalizeClaimed(claimed, (r) => finalizeSuccessFor(r, mpesaReceiptNumber, io));
     } else {
-      await finalizeMpesaFailure({ receipt, resultDesc: ResultDesc, io });
+      const claimed = await claimPendingStk(CheckoutRequestID, "failed");
+      if (claimed) {
+        await finalizeMpesaFailure({
+          receipt: claimed,
+          resultDesc: verified.ResultDesc || ResultDesc,
+          io,
+        });
+      }
     }
 
-    logSuccess("receipt", "M-Pesa callback processed", { CheckoutRequestID, ResultCode });
-    res.status(200).json({ message: "Callback processed" });
+    logSuccess("receipt", "M-Pesa callback processed", { CheckoutRequestID, verifiedCode: verified.ResultCode });
   } catch (error) {
     logError("receipt", "M-Pesa callback error", error);
-    // Always 200 back to Daraja — logging the failure is what matters here,
-    // returning a non-200 would just cause Safaricom to retry the callback.
-    res.status(200).json({ message: "Callback error logged" });
   }
 };
 
@@ -356,20 +408,24 @@ export const getMpesaStatus = async (req, res, next) => {
       const resultCode = Number(queryRes.ResultCode);
 
       if (resultCode === 0) {
-        if (receipt.mpesaSource === "wallet") {
-          await finalizeWalletMpesaSuccess({ receipt, mpesaReceiptNumber: null, io });
-        } else {
-          await finalizeMpesaSuccess({ receipt, mpesaReceiptNumber: null, io });
+        const claimed = await claimPendingStk(receipt.mpesaCheckoutRequestId, "success");
+        if (claimed) {
+          await finalizeClaimed(claimed, (r) => finalizeSuccessFor(r, null, io));
         }
-        return res.json({ status: "success", receipt });
+        const fresh = await Receipt.findById(receipt._id);
+        return res.json({ status: "success", receipt: fresh });
       }
       if (!isNaN(resultCode)) {
-        await finalizeMpesaFailure({ receipt, resultDesc: queryRes.ResultDesc, io });
-        return res.json({ status: "failed", message: queryRes.ResultDesc, receipt });
+        const claimed = await claimPendingStk(receipt.mpesaCheckoutRequestId, "failed");
+        if (claimed) {
+          await finalizeMpesaFailure({ receipt: claimed, resultDesc: queryRes.ResultDesc, io });
+        }
+        const fresh = await Receipt.findById(receipt._id);
+        if (fresh.status === "paid") return res.json({ status: "success", receipt: fresh });
+        return res.json({ status: "failed", message: queryRes.ResultDesc, receipt: fresh });
       }
     } catch (queryErr) {
-      // Daraja returns an error while the push is still awaiting PIN entry —
-      // this is expected mid-flight, not a real failure, so it's a warn not logError.
+      // Daraja errors while the push is still awaiting PIN entry; expected mid-flight.
       console.warn(`[receipt] ⚠️ M-Pesa status query still pending:`, queryErr.response?.data || queryErr.message);
     }
 
