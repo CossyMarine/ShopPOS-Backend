@@ -33,8 +33,9 @@ export const checkMpesaConfig = () => {
 export const getAccessToken = async () => {
   if (cachedToken && Date.now() < cachedTokenExpiry) return cachedToken;
 
-  const key = process.env.MPESA_CONSUMER_KEY;
-  const secret = process.env.MPESA_CONSUMER_SECRET;
+  // trim() guards against stray spaces/newlines pasted into Render env vars
+  const key = (process.env.MPESA_CONSUMER_KEY || "").trim();
+  const secret = (process.env.MPESA_CONSUMER_SECRET || "").trim();
 
   if (!key || !secret) {
     throw new Error("MPESA_CONSUMER_KEY / MPESA_CONSUMER_SECRET not configured");
@@ -42,14 +43,24 @@ export const getAccessToken = async () => {
 
   const auth = Buffer.from(`${key}:${secret}`).toString("base64");
 
-  const { data } = await axios.get(
-    `${BASE_URL}/oauth/v1/generate?grant_type=client_credentials`,
-    { headers: { Authorization: `Basic ${auth}` }, timeout: HTTP_TIMEOUT }
-  );
+  try {
+    const { data } = await axios.get(
+      `${BASE_URL}/oauth/v1/generate?grant_type=client_credentials`,
+      { headers: { Authorization: `Basic ${auth}` }, timeout: HTTP_TIMEOUT }
+    );
 
-  cachedToken = data.access_token;
-  cachedTokenExpiry = Date.now() + (Number(data.expires_in || 3599) - 60) * 1000;
-  return cachedToken;
+    cachedToken = data.access_token;
+    cachedTokenExpiry = Date.now() + (Number(data.expires_in || 3599) - 60) * 1000;
+    return cachedToken;
+  } catch (err) {
+    if (err.response?.status === 400 || err.response?.status === 401) {
+      // Keep err.response/err.config intact for the controllers' logging,
+      // but give the UI a message that points at the real problem.
+      err.message =
+        "M-Pesa rejected the app credentials. Check MPESA_CONSUMER_KEY / MPESA_CONSUMER_SECRET (must be Go Live keys, not sandbox).";
+    }
+    throw err;
+  }
 };
 
 const timestamp = () => {
