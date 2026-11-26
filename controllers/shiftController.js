@@ -2,6 +2,7 @@
 import Shift from "../models/Shift.js";
 import PettyCash from "../models/PettyCash.js";
 import Receipt from "../models/Receipt.js";
+import CreditRecord from "../models/CreditRecord.js";
 import VoidRequest from "../models/VoidRequest.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
@@ -14,39 +15,102 @@ const SHIFT_STATUSES = ["paid", "partial", "credit"];
 
 const TILL_METHODS = ["mpesa_till", "manual_till", "mpesa_paybill", "mpesa_pochi"];
 
+const hasCreditEntry = (receipt) => (receipt.payments || []).some((p) => p.method === "credit");
+
+const newTotals = () => ({
+  cash: 0, till: 0, prompt: 0, reward: 0,
+  creditGiven: 0, creditCollected: 0,
+});
+
 // Adds one receipt's payments into the running totals `t`.
 //
-// - "credit" entries are the SALE on credit, not money: tallied as creditGiven.
-// - On a credit bill, cash/till entries are settlements. They only count
-//   toward this shift if they were received before the shift ended, so a
-//   settlement months later can't change a closed shift's expected cash.
-//   Those that do count are also tallied as creditCollected (they are already
-//   inside cash/till — creditCollected just tells them apart).
-const tallyReceipt = (t, receipt, windowEnd) => {
-  const hasCredit = receipt.payments.some((p) => p.method === "credit");
+// - "credit" entries are the SALE on credit, not money: tallied as creditGiven
+//   (in the shift that gave the credit).
+// - On a credit bill, every cash/till entry is a settlement. Those are NOT
+//   counted here: they belong to the shift that COLLECTED the money, which is
+//   often a different shift from the one that gave the credit. They are
+//   counted by addCreditCollections below.
+const tallyReceipt = (t, receipt) => {
+  const hasCredit = hasCreditEntry(receipt);
 
   receipt.payments.forEach((p) => {
     if (p.method === "credit") {
       t.creditGiven += p.amount;
       return;
     }
-    if (hasCredit && p.paidAt && new Date(p.paidAt) > windowEnd) return;
+    if (hasCredit) return; // settlement money, see addCreditCollections
 
-    let counted = true;
     if (p.method === "cash") t.cash += p.amount;
     else if (TILL_METHODS.includes(p.method)) t.till += p.amount;
     else if (p.method === "mpesa_stk") t.prompt += p.amount;
     else if (p.method === "reward") t.reward += p.amount;
-    else counted = false;
-
-    if (counted && hasCredit) t.creditCollected += p.amount;
   });
 };
 
-const newTotals = () => ({
-  cash: 0, till: 0, prompt: 0, reward: 0,
-  creditGiven: 0, creditCollected: 0,
-});
+// Adds credit settlement money to the shift that received it.
+//   - Settlement stamped with a shift  -> counts in THAT shift, whenever the
+//     credit was given. (A customer paying KES 500 three days later adds 500
+//     to today's drawer, not to the old shift.)
+//   - Old / unstamped settlement       -> same rule as before: counts in the
+//     shift that gave the credit, only if received before that shift closed.
+// Settlements of bills that were later voided are ignored, like any voided bill.
+const addCreditCollections = async (shifts, totalsOf, givenReceipts) => {
+  const ids = shifts.map((s) => s._id);
+  const endById = new Map(shifts.map((s) => [String(s._id), s.closedAt || new Date()]));
+  const creditReceiptIds = givenReceipts.filter(hasCreditEntry).map((r) => r._id);
+
+  const records = await CreditRecord.find({
+    $or: [{ "settlements.shift": { $in: ids } }, { receipt: { $in: creditReceiptIds } }],
+  })
+    .select("receipt settlements")
+    .lean();
+  if (!records.length) return;
+
+  const owners = await Receipt.find({ _id: { $in: records.map((r) => r.receipt) } })
+    .select("status shift")
+    .lean();
+  const ownerById = new Map(owners.map((r) => [String(r._id), r]));
+
+  records.forEach((rec) => {
+    const owner = ownerById.get(String(rec.receipt));
+    if (!owner || !SHIFT_STATUSES.includes(owner.status)) return;
+
+    rec.settlements.forEach((s) => {
+      let target = null;
+      if (s.shift) {
+        if (endById.has(String(s.shift))) target = String(s.shift);
+      } else if (owner.shift && endById.has(String(owner.shift))) {
+        if (new Date(s.paidAt) <= endById.get(String(owner.shift))) target = String(owner.shift);
+      }
+      if (!target) return;
+
+      const t = totalsOf(target);
+      if (s.method === "cash") t.cash += s.amount;
+      else if (TILL_METHODS.includes(s.method)) t.till += s.amount;
+      else return;
+      t.creditCollected += s.amount; // already inside cash/till — just tells them apart
+    });
+  });
+};
+
+// Totals for a set of shifts: sales by method, credit given, credit collected.
+// Returns a function: totalsOf(shiftId) -> { cash, till, prompt, reward, creditGiven, creditCollected }
+// Shared by the shift screens and the Till Check report so they always agree.
+export const loadShiftTotals = async (shifts) => {
+  const ids = shifts.map((s) => s._id);
+  const byShift = new Map();
+  const totalsOf = (id) => {
+    const k = String(id);
+    if (!byShift.has(k)) byShift.set(k, newTotals());
+    return byShift.get(k);
+  };
+
+  const receipts = await Receipt.find({ shift: { $in: ids }, status: { $in: SHIFT_STATUSES } }).select("shift payments");
+  receipts.forEach((r) => tallyReceipt(totalsOf(r.shift), r));
+
+  await addCreditCollections(shifts, totalsOf, receipts);
+  return totalsOf;
+};
 
 // @desc    Open a shift for the logged-in user. No cash float is asked for.
 // @route   POST /api/shifts/open
@@ -150,13 +214,8 @@ const computeShiftSummary = async (shiftId) => {
   const shift = await Shift.findById(shiftId).populate("openedBy", "fullName").populate("closedBy", "fullName");
   if (!shift) return null;
 
-  const receipts = await Receipt.find({ shift: shiftId, status: { $in: SHIFT_STATUSES } });
-
-  // Money received after this moment doesn't belong to this shift's cash.
-  const windowEnd = shift.closedAt || new Date();
-
-  const totals = newTotals();
-  receipts.forEach((r) => tallyReceipt(totals, r, windowEnd));
+  const totalsOf = await loadShiftTotals([shift]);
+  const totals = totalsOf(shift._id);
 
   const voidedReceipts = await Receipt.find({ shift: shiftId, status: "voided" });
   const voidedTotal = voidedReceipts.reduce((sum, r) => sum + r.subtotal, 0);
@@ -177,6 +236,7 @@ const computeShiftSummary = async (shiftId) => {
   });
 
   // openingFloat is 0 now that the open-shift prompt is gone
+  // Cash from credit settlements collected in this shift is already in totals.cash.
   const expectedCash = (shift.openingFloat || 0) + totals.cash - pettyCashOut;
 
   // grandTotal = MONEY received by method (used for cash reconciliation).
@@ -393,30 +453,21 @@ export const getShiftsReport = async (req, res, next) => {
     ]);
 
     const ids = shifts.map((s) => s._id);
-    const [receipts, petty] = await Promise.all([
-      Receipt.find({ shift: { $in: ids }, status: { $in: SHIFT_STATUSES } }).select("shift payments"),
+    const [totalsOf, petty] = await Promise.all([
+      loadShiftTotals(shifts),
       PettyCash.find({ shift: { $in: ids } }).select("shift amount"),
     ]);
 
-    // Each shift's own end (or "now" while open) — see tallyReceipt.
-    const now = new Date();
-    const endByShift = new Map(shifts.map((s) => [String(s._id), s.closedAt || now]));
-
-    const totalsByShift = new Map();
-    const get = (id) => {
-      const k = String(id);
-      if (!totalsByShift.has(k)) totalsByShift.set(k, { ...newTotals(), petty: 0 });
-      return totalsByShift.get(k);
-    };
-
-    receipts.forEach((r) => {
-      tallyReceipt(get(r.shift), r, endByShift.get(String(r.shift)) || now);
+    const pettyByShift = new Map();
+    petty.forEach((e) => {
+      const k = String(e.shift);
+      pettyByShift.set(k, (pettyByShift.get(k) || 0) + e.amount);
     });
-    petty.forEach((e) => { get(e.shift).petty += e.amount; });
 
     const rows = shifts.map((s) => {
-      const t = get(s._id);
-      const expectedCash = (s.openingFloat || 0) + t.cash - t.petty;
+      const t = totalsOf(s._id);
+      const pettyOut = pettyByShift.get(String(s._id)) || 0;
+      const expectedCash = (s.openingFloat || 0) + t.cash - pettyOut;
       let difference = null;
       let result = "open";
       if (s.status === "closed" && s.closingCashCount !== null) {
@@ -440,7 +491,7 @@ export const getShiftsReport = async (req, res, next) => {
         reward: t.reward,
         creditGiven: t.creditGiven,
         creditCollected: t.creditCollected,
-        pettyCashOut: t.petty,
+        pettyCashOut: pettyOut,
         expectedCash,
         cashCounted: s.closingCashCount,
         difference,
