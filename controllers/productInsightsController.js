@@ -82,18 +82,21 @@ export const getProductInsights = async (req, res, next) => {
     const allDeliveries = [...deliveries, ...others]
       .sort((a, b) => new Date(b.receivedAt) - new Date(a.receivedAt));
 
-    // Sales, last 30 days
+    // Sales, last 30 days. Bills given on credit are sales too (the goods
+    // have left the shop), so "credit" is included alongside paid/partial.
     const since = new Date(Date.now() - 30 * 864e5);
     const bills = await Receipt.aggregate([
-      { $match: { branch: product.branch, status: { $in: ["paid", "partial"] }, createdAt: { $gte: since }, "items.productId": pid } },
+      { $match: { branch: product.branch, status: { $in: ["paid", "partial", "credit"] }, createdAt: { $gte: since }, "items.productId": pid } },
       { $project: {
           billId: 1, cashierName: 1, createdAt: 1, paidAt: 1, vatEnabled: 1, vatRate: 1, priceMode: 1,
+          // true if this bill was given on credit (still owing, or since settled)
+          onCredit: { $in: ["credit", { $ifNull: ["$payments.method", []] }] },
           items: { $filter: { input: "$items", as: "i", cond: { $eq: ["$$i.productId", pid] } } },
       } },
       { $sort: { createdAt: -1 } },
     ]);
 
-    let units = 0, gross = 0, net = 0, cost = 0;
+    let units = 0, gross = 0, net = 0, cost = 0, creditUnits = 0;
     const recent = [];
     for (const bill of bills) {
       for (const it of bill.items) {
@@ -101,8 +104,16 @@ export const getProductInsights = async (req, res, next) => {
         const lineNet = inclusive ? it.lineTotal / (1 + (bill.vatRate || 0) / 100) : it.lineTotal;
         const unitCost = it.costPriceAtSale != null ? it.costPriceAtSale : avgCost;
         units += it.quantity; gross += it.lineTotal; net += lineNet; cost += unitCost * it.quantity;
+        if (bill.onCredit) creditUnits += it.quantity;
         if (recent.length < 10) {
-          recent.push({ billId: bill.billId, at: bill.paidAt || bill.createdAt, cashier: bill.cashierName || "", quantity: it.quantity, unitPrice: it.unitPrice });
+          recent.push({
+            billId: bill.billId,
+            at: bill.paidAt || bill.createdAt,
+            cashier: bill.cashierName || "",
+            quantity: it.quantity,
+            unitPrice: it.unitPrice,
+            onCredit: !!bill.onCredit,
+          });
         }
       }
     }
@@ -111,7 +122,7 @@ export const getProductInsights = async (req, res, next) => {
       productId: String(pid),
       avgCost: r4(avgCost),
       deliveries: allDeliveries,
-      sales: { days: 30, units: r4(units), gross: r2(gross), net: r2(net), cost: r2(cost), profit: r2(net - cost), recent },
+      sales: { days: 30, units: r4(units), creditUnits: r4(creditUnits), gross: r2(gross), net: r2(net), cost: r2(cost), profit: r2(net - cost), recent },
       details: {
         vatClass: product.vatClass, perishable: product.perishable, maxLevel: product.maxLevel,
         reorderLevel: product.reorderLevel, description: product.description,
