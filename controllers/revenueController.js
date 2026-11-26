@@ -2,10 +2,16 @@
 //
 // A "sale" is a receipt that is paid OR given on credit, dated by
 // receipt.paidAt (for credit bills: the day the credit was given).
+//
+// VAT: net profit and the category breakdown use lineNet (the amount before
+// VAT), exactly like the Analytics page. When VAT is off, lineNet is just
+// lineTotal and nothing changes.
 import mongoose from "mongoose";
 import Receipt from "../models/Receipt.js";
 import Product from "../models/Product.js";
+import AdminSettings from "../models/AdminSettings.js"; // VAT
 import { getKenyanDayBounds, getKenyanMonthBounds } from "../utils/dateHelpers.js";
+import { salesStages } from "../utils/vatReport.js"; // VAT
 import { logStart, logSuccess } from "../utils/requestLogger.js";
 
 // Receipt statuses that count as a sale.
@@ -117,6 +123,9 @@ export const getRevenueSummary = async (req, res, next) => {
 //          NOTE on credit: bills given on credit count as sales on the day
 //          they were given, and stay under "credit" in the payment
 //          breakdown even after the customer has settled them.
+//
+//          NOTE on VAT: netProfit and the category share work on the amount
+//          before VAT (lineNet), the same as the Analytics page.
 // @route   GET /api/revenue/dashboard-stats?branch=
 // @access  Protected — admin, branchManager
 export const getDashboardStats = async (req, res, next) => {
@@ -126,6 +135,10 @@ export const getDashboardStats = async (req, res, next) => {
     const { start: startOfDay, end: endOfDay } = getKenyanDayBounds();
     const { start: startOfMonth, end: endOfMonth } = getKenyanMonthBounds();
     const branchMatch = req.query.branch ? { branch: new mongoose.Types.ObjectId(req.query.branch) } : {};
+
+    // VAT: lineNet / lineVat / linePaid for every line (lineNet = lineTotal when VAT is off)
+    const vatCfg = (await AdminSettings.getSettings()).vat || {};
+    const sales = salesStages(!!vatCfg.enabled, vatCfg.rate);
 
     const paidTodayMatch = {
       status: { $in: SOLD },
@@ -201,10 +214,11 @@ export const getDashboardStats = async (req, res, next) => {
           },
         },
         { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
+        ...sales, // VAT
         {
           $group: {
             _id: { $ifNull: ["$product.category", "Uncategorized"] },
-            amount: { $sum: "$items.lineTotal" },
+            amount: { $sum: "$lineNet" }, // VAT: was $items.lineTotal
           },
         },
         { $sort: { amount: -1 } },
@@ -273,10 +287,11 @@ export const getDashboardStats = async (req, res, next) => {
             },
           },
         },
+        ...sales, // VAT
         {
           $group: {
             _id: null,
-            revenue: { $sum: "$items.lineTotal" },
+            revenue: { $sum: "$lineNet" }, // VAT: was $items.lineTotal
             cost: { $sum: "$lineCost" },
           },
         },
