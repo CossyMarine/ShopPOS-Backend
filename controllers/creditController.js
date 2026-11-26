@@ -52,8 +52,12 @@ const assertBranchAccess = (req, branchId) => {
 // chunks = [{ method, amount, reference }]. Returns true if now fully paid.
 // The money enters the ledger the day it is collected; the sale itself was
 // counted on the day the credit was given, and receipt.paidAt is not touched.
+//
+// shiftId = the shift that is open right now (the one whose drawer receives
+// the money). It is stamped on each settlement so shift reports count the cash
+// in the shift that collected it, not in the shift that gave the credit.
 // ------------------------------------------------------------
-const applySettlement = async ({ record, receipt, chunks, user, session }) => {
+const applySettlement = async ({ record, receipt, chunks, user, shiftId, session }) => {
   const paidAt = new Date();
   let total = 0;
 
@@ -77,6 +81,7 @@ const applySettlement = async ({ record, receipt, chunks, user, session }) => {
       reference: c.reference || null,
       receivedBy: user?._id || null,
       receivedByName: user?.fullName || null,
+      shift: shiftId || null,
       paidAt,
     });
   }
@@ -277,6 +282,8 @@ export const getMyCredits = async (req, res, next) => {
 //   { creditId | customerName, payments: [{ method, amount, reference }] }
 // Partial payments are fine. Money is spread over the bills oldest-first, so
 // a part-payment on "pay all" clears the oldest bills first.
+// The route requires an open shift (req.shift): the money is counted in that
+// shift's drawer.
 // ============================================================
 export const settleMine = async (req, res, next) => {
   const { creditId, customerName, payments } = req.body;
@@ -316,7 +323,14 @@ export const settleMine = async (req, res, next) => {
         const chunks = takeFromPool(pool, record.amount - record.amountPaid);
         if (!chunks.length) break;
 
-        const fullyPaid = await applySettlement({ record, receipt, chunks, user: req.user, session });
+        const fullyPaid = await applySettlement({
+          record,
+          receipt,
+          chunks,
+          user: req.user,
+          shiftId: req.shift?._id || null,
+          session,
+        });
         if (fullyPaid) clearedCount += 1;
         settled.push({ record, receipt, fullyPaid });
       }
@@ -432,6 +446,8 @@ export const getCreditSummary = async (req, res, next) => {
 // ============================================================
 // ADMIN: record a settlement (full or part payment) on one record
 // @route POST /api/credits/:id/settle   { amount, method, reference }
+// If the person recording it has a shift open (req.shift), the money is
+// counted in that shift; otherwise it is left unstamped.
 // ============================================================
 export const settleCredit = async (req, res, next) => {
   const { id } = req.params;
@@ -464,6 +480,7 @@ export const settleCredit = async (req, res, next) => {
         receipt,
         chunks: [{ method, amount: pay, reference }],
         user: req.user,
+        shiftId: req.shift?._id || null,
         session,
       });
     });
