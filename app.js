@@ -43,6 +43,7 @@ import supplierRoutes from "./routes/supplierRoutes.js";
 import goodsReceiptRoutes from "./routes/goodsReceiptRoutes.js";
 import displayRoutes from "./routes/displayRoutes.js";
 import creditRoutes from "./routes/creditRoutes.js";
+import socketRoutes from "./routes/socketRoutes.js";
 
 dotenv.config();
 
@@ -126,6 +127,7 @@ app.use("/api/suppliers", supplierRoutes);
 app.use("/api/goods-receipts", goodsReceiptRoutes);
 app.use("/api/display", displayRoutes);
 app.use("/api/credits", creditRoutes);
+app.use("/api/socket", socketRoutes);
 
 /* =================================================
    404 + ERROR HANDLING
