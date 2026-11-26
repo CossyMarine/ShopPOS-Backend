@@ -65,6 +65,8 @@ export const payOnCredit = async (req, res, next) => {
       if (req.shift && !receipt.shift) receipt.shift = req.shift._id;
       receipt.status = "credit";
       receipt.paymentMethod = "credit";
+      receipt.creditCustomerName = name;
+      receipt.creditCustomerPhone = String(customerPhone || "").trim() || null;
       receipt.mpesaStatus = receipt.mpesaStatus === "pending" ? "idle" : receipt.mpesaStatus;
 
       // The sale: recorded as a "credit" payment entry for the full bill, and
