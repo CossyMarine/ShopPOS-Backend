@@ -16,6 +16,21 @@ const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // Anything summing money collected must skip it.
 const isMoneyEntry = (p) => p.method !== "credit";
 
+// Same customer = same name ignoring case and outer spaces.
+const nameKey = (s) => String(s || "").trim().toLowerCase();
+const nameExpr = (key) => ({
+  $expr: { $eq: [{ $toLower: { $trim: { input: "$customerName" } } }, key] },
+});
+
+// If this cashier already has a customer with that name (any case), reuse the
+// stored spelling so every bill lands under one name.
+const canonicalName = async (userId, typed) => {
+  const prior = await CreditRecord.findOne({ createdBy: userId, ...nameExpr(nameKey(typed)) })
+    .sort({ createdAt: -1 })
+    .select("customerName");
+  return prior?.customerName || typed;
+};
+
 // "2026-12-05" -> end of that day in Kenya time, so a bill is only
 // "overdue" once the whole due day has passed.
 const parseDueDate = (value) => {
@@ -32,19 +47,92 @@ const assertBranchAccess = (req, branchId) => {
   if (String(req.user?.branch) !== String(branchId)) throw forbidden("You can only access your own branch");
 };
 
+// ------------------------------------------------------------
+// Shared: apply one or more payment chunks to a credit record + its receipt.
+// chunks = [{ method, amount, reference }]. Returns true if now fully paid.
+// The money enters the ledger the day it is collected; the sale itself was
+// counted on the day the credit was given, and receipt.paidAt is not touched.
+// ------------------------------------------------------------
+const applySettlement = async ({ record, receipt, chunks, user, session }) => {
+  const paidAt = new Date();
+  let total = 0;
+
+  for (const c of chunks) {
+    const pay = round2(c.amount);
+    total = round2(total + pay);
+
+    receipt.payments.push({
+      amount: pay,
+      method: c.method,
+      reference: c.reference || `Credit settlement — ${record.customerName}`,
+      paidBy: user?._id || null,
+      paidAt,
+    });
+    if (c.method === "cash") receipt.cashAmount = round2((receipt.cashAmount || 0) + pay);
+    else receipt.tillAmount = round2((receipt.tillAmount || 0) + pay);
+
+    record.settlements.push({
+      amount: pay,
+      method: c.method,
+      reference: c.reference || null,
+      receivedBy: user?._id || null,
+      receivedByName: user?.fullName || null,
+      paidAt,
+    });
+  }
+
+  receipt.amountPaid = round2(
+    receipt.payments.filter(isMoneyEntry).reduce((s, p) => s + p.amount, 0)
+  );
+  record.amountPaid = round2(record.amountPaid + total);
+
+  const fullyPaid = record.amountPaid >= record.amount - 0.005;
+  if (fullyPaid) {
+    record.status = "settled";
+    record.settledAt = paidAt;
+    receipt.status = "paid";
+    const methods = [...new Set(receipt.payments.filter(isMoneyEntry).map((p) => p.method))];
+    receipt.paymentMethod = methods.length === 1 ? methods[0] : "both";
+    receipt.changeGiven = 0;
+  } else {
+    record.status = "partial";
+  }
+
+  await creditCashback(receipt, total, { session });
+  await receipt.save({ session });
+  await record.save({ session });
+  return fullyPaid;
+};
+
+// Take up to `need` from the front of the payment pool, method by method.
+const takeFromPool = (pool, need) => {
+  const chunks = [];
+  let left = round2(need);
+  while (left > 0.004 && pool.length) {
+    const p = pool[0];
+    const take = round2(Math.min(p.amount, left));
+    chunks.push({ method: p.method, amount: take, reference: p.reference });
+    p.amount = round2(p.amount - take);
+    left = round2(left - take);
+    if (p.amount <= 0.004) pool.shift();
+  }
+  return chunks;
+};
+
 // ============================================================
 // CASHIER: put a bill on credit
 // @route PATCH /api/receipts/:id/pay/credit
 // ============================================================
 export const payOnCredit = async (req, res, next) => {
   const { id } = req.params;
-  const { customerName, customerPhone, dueDate, note } = req.body;
+  const { customerName, customerPhone, dueDate } = req.body;
   let session, receipt, record;
 
   try {
     logStart("credit", "Putting bill on credit", { receiptId: id });
-    const name = String(customerName || "").trim();
-    if (!name) return res.status(400).json({ message: "Customer name is required for credit" });
+    const typed = String(customerName || "").trim();
+    if (!typed) return res.status(400).json({ message: "Customer name is required for credit" });
+    const name = await canonicalName(req.user?._id, typed);
     const due = parseDueDate(dueDate);
 
     session = await mongoose.startSession();
@@ -69,9 +157,9 @@ export const payOnCredit = async (req, res, next) => {
       receipt.creditCustomerPhone = String(customerPhone || "").trim() || null;
       receipt.mpesaStatus = receipt.mpesaStatus === "pending" ? "idle" : receipt.mpesaStatus;
 
-      // The sale: recorded as a "credit" payment entry for the full bill, and
-      // dated today so revenue/profit/items land on the day the goods left.
-      // amountPaid is left alone — no money has been received yet.
+      // The sale: a "credit" payment entry for the full bill, dated today so
+      // revenue/profit/items land on the day the goods left. amountPaid is
+      // left alone — no money has been received yet.
       receipt.payments.push({
         amount: receipt.totalDue,
         method: "credit",
@@ -82,8 +170,6 @@ export const payOnCredit = async (req, res, next) => {
       receipt.paidAt = givenAt;
 
       await receipt.save({ session });
-
-      // Goods have left the shop, so the order is complete (stock was already deducted).
       await Order.findByIdAndUpdate(receipt.order, { status: "completed" }, { session });
 
       [record] = await CreditRecord.create(
@@ -113,6 +199,149 @@ export const payOnCredit = async (req, res, next) => {
 
   logSuccess("credit", "Bill put on credit", { billId: receipt.billId, customer: record.customerName });
   res.json({ message: "Credit recorded", receipt, credit: record });
+};
+
+// ============================================================
+// CASHIER: customers this cashier has given credit to
+// @route GET /api/credits/mine/customers?q=&outstanding=true&limit=
+//   - name picker:  ?q=jo            (everyone they've served, owing or not)
+//   - credit list:  ?outstanding=true (only customers who still owe)
+// ============================================================
+export const getMyCustomers = async (req, res, next) => {
+  try {
+    const { q, outstanding } = req.query;
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 50));
+
+    const match = { createdBy: req.user._id, status: { $ne: "voided" } };
+    if (outstanding === "true") match.status = { $in: ["open", "partial"] };
+    if (q && q.trim()) match.customerName = new RegExp(escapeRegex(q.trim()), "i");
+
+    const isOpen = { $in: ["$status", ["open", "partial"]] };
+    const rows = await CreditRecord.aggregate([
+      { $match: match },
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: { $toLower: { $trim: { input: "$customerName" } } },
+          name: { $first: "$customerName" },
+          phone: { $first: "$customerPhone" },
+          owing: { $sum: { $cond: [isOpen, { $subtract: ["$amount", "$amountPaid"] }, 0] } },
+          billCount: { $sum: { $cond: [isOpen, 1, 0] } },
+          lastAt: { $max: "$createdAt" },
+        },
+      },
+      { $sort: { lastAt: -1 } },
+      { $limit: limit },
+    ]);
+
+    res.json({
+      customers: rows.map((r) => ({
+        name: r.name,
+        phone: r.phone || null,
+        owing: round2(r.owing),
+        billCount: r.billCount,
+        lastAt: r.lastAt,
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ============================================================
+// CASHIER: one customer's outstanding credit bills (oldest first)
+// @route GET /api/credits/mine?name=
+// ============================================================
+export const getMyCredits = async (req, res, next) => {
+  try {
+    const name = String(req.query.name || "").trim();
+    if (!name) return res.status(400).json({ message: "Customer name is required" });
+
+    const credits = await CreditRecord.find({
+      createdBy: req.user._id,
+      status: { $in: ["open", "partial"] },
+      ...nameExpr(nameKey(name)),
+    })
+      .sort({ createdAt: 1 })
+      .populate("receipt", "billId items subtotal createdAt");
+
+    res.json({ credits });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ============================================================
+// CASHIER: pay one credit bill, or all of a customer's bills
+// @route POST /api/credits/mine/settle
+//   { creditId | customerName, payments: [{ method, amount, reference }] }
+// Partial payments are fine. Money is spread over the bills oldest-first, so
+// a part-payment on "pay all" clears the oldest bills first.
+// ============================================================
+export const settleMine = async (req, res, next) => {
+  const { creditId, customerName, payments } = req.body;
+  let session, settled = [], clearedCount = 0, remaining = 0;
+
+  try {
+    logStart("credit", "Cashier credit settlement", { creditId, customerName });
+
+    const filter = { createdBy: req.user._id, status: { $in: ["open", "partial"] } };
+    if (creditId) filter._id = creditId;
+    else Object.assign(filter, nameExpr(nameKey(customerName)));
+
+    session = await mongoose.startSession();
+    await session.withTransaction(async () => {
+      settled = [];
+      clearedCount = 0;
+
+      const records = await CreditRecord.find(filter).sort({ createdAt: 1 }).session(session);
+      if (!records.length) throw notFound("Credit record");
+
+      const owing = round2(records.reduce((s, r) => s + (r.amount - r.amountPaid), 0));
+      const paying = round2(payments.reduce((s, p) => s + Number(p.amount), 0));
+      if (!(paying > 0)) throw badRequest("Enter a valid amount");
+      if (paying > owing + 0.001) throw badRequest(`Amount exceeds the balance of KES ${owing}`);
+
+      const pool = payments.map((p) => ({
+        method: p.method,
+        amount: round2(p.amount),
+        reference: p.reference || null,
+      }));
+
+      for (const record of records) {
+        if (!pool.length) break;
+        const receipt = await Receipt.findById(record.receipt).session(session);
+        if (!receipt || receipt.status !== "credit") throw badRequest(`${record.billId} is no longer on credit`);
+
+        const chunks = takeFromPool(pool, record.amount - record.amountPaid);
+        if (!chunks.length) break;
+
+        const fullyPaid = await applySettlement({ record, receipt, chunks, user: req.user, session });
+        if (fullyPaid) clearedCount += 1;
+        settled.push({ record, receipt, fullyPaid });
+      }
+      remaining = round2(owing - paying);
+    });
+  } catch (error) {
+    if (session) await session.endSession();
+    return next(error);
+  }
+  await session.endSession();
+
+  const io = req.app.get("io");
+  for (const s of settled) {
+    io?.emit("receipt:updated", s.receipt);
+    if (s.fullyPaid) io?.emit("receipt:paid", s.receipt);
+    io?.emit("credit:updated", s.record);
+  }
+
+  logSuccess("credit", "Cashier credit settlement recorded", { bills: settled.length, clearedCount });
+  res.json({
+    message: remaining <= 0.005 ? "Credit fully cleared" : "Part-payment recorded",
+    clearedCount,
+    billsTouched: settled.length,
+    remaining,
+  });
 };
 
 // ============================================================
@@ -201,7 +430,7 @@ export const getCreditSummary = async (req, res, next) => {
 };
 
 // ============================================================
-// ADMIN: record a settlement (full or part payment)
+// ADMIN: record a settlement (full or part payment) on one record
 // @route POST /api/credits/:id/settle   { amount, method, reference }
 // ============================================================
 export const settleCredit = async (req, res, next) => {
@@ -230,53 +459,13 @@ export const settleCredit = async (req, res, next) => {
       receipt = await Receipt.findById(record.receipt).session(session);
       if (!receipt || receipt.status !== "credit") throw badRequest("This bill is no longer on credit");
 
-      const paidAt = new Date();
-
-      // The money enters the ledger the day it is collected, as a normal
-      // cash/till entry. The sale itself was already counted on the day
-      // the credit was given, so this is "money collected", not a new sale.
-      receipt.payments.push({
-        amount: pay,
-        method,
-        reference: reference || `Credit settlement — ${record.customerName}`,
-        paidBy: req.user?._id || null,
-        paidAt,
+      fullyPaid = await applySettlement({
+        record,
+        receipt,
+        chunks: [{ method, amount: pay, reference }],
+        user: req.user,
+        session,
       });
-      // Money received only — the "credit" entry is not money.
-      receipt.amountPaid = round2(
-        receipt.payments.filter(isMoneyEntry).reduce((s, p) => s + p.amount, 0)
-      );
-      if (method === "cash") receipt.cashAmount = round2((receipt.cashAmount || 0) + pay);
-      else receipt.tillAmount = round2((receipt.tillAmount || 0) + pay);
-
-      record.settlements.push({
-        amount: pay,
-        method,
-        reference: reference || null,
-        receivedBy: req.user?._id || null,
-        receivedByName: req.user?.fullName || null,
-        paidAt,
-      });
-      record.amountPaid = round2(record.amountPaid + pay);
-
-      fullyPaid = record.amountPaid >= record.amount - 0.005;
-      if (fullyPaid) {
-        record.status = "settled";
-        record.settledAt = paidAt;
-
-        // The bill is now fully paid. receipt.paidAt is NOT touched: it stays
-        // on the day the credit was given, so the sale keeps its original date.
-        receipt.status = "paid";
-        const methods = [...new Set(receipt.payments.filter(isMoneyEntry).map((p) => p.method))];
-        receipt.paymentMethod = methods.length === 1 ? methods[0] : "both";
-        receipt.changeGiven = 0;
-      } else {
-        record.status = "partial";
-      }
-
-      await creditCashback(receipt, pay, { session });
-      await receipt.save({ session });
-      await record.save({ session });
     });
   } catch (error) {
     if (session) await session.endSession();
