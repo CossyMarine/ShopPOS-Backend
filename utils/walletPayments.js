@@ -74,10 +74,12 @@ export const applyPaymentToReceipt = async ({ receipt, amount, method, reference
     await Order.findByIdAndUpdate(receipt.order, { status: "completed" }, { session });
   }
 
-  if (io) {
-    io.emit("receipt:updated", receipt);
-    if (receipt.status === "paid") io.emit("receipt:paid", receipt);
-  }
+    if (io) {
+    const targets = [`branch:${receipt.branch}`];
+    if (receipt.customer) targets.push(`user:${receipt.customer}`);
+    io.to(targets).emit("receipt:updated", receipt);
+    if (receipt.status === "paid") io.to(targets).emit("receipt:paid", receipt);
+    }
 
   return receipt;
 };
@@ -133,10 +135,12 @@ export const applyRewardRedemption = async ({ receipt, user, pointsToRedeem, io,
     await Order.findByIdAndUpdate(receipt.order, { status: "completed" }, { session });
   }
 
-  if (io) {
-    io.emit("receipt:updated", receipt);
-    if (receipt.status === "paid") io.emit("receipt:paid", receipt);
-  }
+    if (io) {
+    const targets = [`branch:${receipt.branch}`];
+    if (receipt.customer) targets.push(`user:${receipt.customer}`);
+    io.to(targets).emit("receipt:updated", receipt);
+    if (receipt.status === "paid") io.to(targets).emit("receipt:paid", receipt);
+    }
 
   return { receipt, pointsUsed, kesApplied: amountToApply };
 };
