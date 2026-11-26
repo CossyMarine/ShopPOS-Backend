@@ -8,6 +8,10 @@
 // A sale is a receipt that is "paid" OR given on "credit". Both are dated by
 // receipt.paidAt — for credit bills that is the day the credit was GIVEN, so
 // revenue, profit and items land on the day the goods left the shop.
+//
+// VAT: revenue, profit, top items and branch figures all use lineNet (the
+// amount before VAT), exactly like the Analytics page, so the two always agree.
+// When VAT is off, lineNet is just lineTotal and nothing changes.
 
 import mongoose from "mongoose";
 import Receipt from "../models/Receipt.js";
@@ -19,6 +23,7 @@ import AdminSettings from "../models/AdminSettings.js";
 import CreditRecord from "../models/CreditRecord.js";
 import { estimateMonthlyGross } from "./payrollController.js";
 import { costEstimationStages } from "./analyticsController.js";
+import { salesStages } from "../utils/vatReport.js"; // VAT
 import { logStart, logSuccess } from "../utils/requestLogger.js";
 import { badRequest, forbidden } from "../utils/AppError.js";
 
@@ -159,6 +164,10 @@ export const getDashboard = async (req, res, next) => {
     if (close <= open) { open = FALLBACK.openHour; close = FALLBACK.closeHour; }
     const hrs = close - open + 1;
 
+    // VAT: lineNet / lineVat / linePaid for every line (lineNet = lineTotal when VAT is off)
+    const vatCfg = s.vat || {};
+    const sales = salesStages(!!vatCfg.enabled, vatCfg.rate);
+
     const np = parts(new Date(), tz);
     const nowRef = { y: np.year, m: np.month - 1, d: np.day, hour: np.hour };
 
@@ -202,16 +211,17 @@ export const getDashboard = async (req, res, next) => {
       revRows, profRows, payRows, heatRows, topRows, branchRows, recent, voidedRows,
       pendingVoidRows, pendingPayRows, lowRows, wageProfiles, creditOwedRows, creditCollectedRows,
     ] = await Promise.all([
-      // revenue + receipts (customers) per bucket, current AND previous period
+      // receipts (customers) per bucket, current AND previous period
       Receipt.aggregate([
         { $match: winMatch }, { $addFields: { p: dp } },
-        { $group: { _id: gid, revenue: { $sum: "$subtotal" }, count: { $sum: 1 } } },
+        { $group: { _id: gid, count: { $sum: 1 } } },
       ]),
-      // item-level revenue/cost per bucket, for profit
+      // item-level revenue (before VAT) and cost per bucket — revenue AND profit come from here
       Receipt.aggregate([
         { $match: winMatch }, { $addFields: { p: dp } }, { $unwind: "$items" }, ...lookupProduct,
         ...costEstimationStages(),
-        { $group: { _id: gid, revenue: { $sum: "$items.lineTotal" }, cost: { $sum: "$lineCost" } } },
+        ...sales, // VAT
+        { $group: { _id: gid, revenue: { $sum: "$lineNet" }, cost: { $sum: "$lineCost" } } }, // VAT: was $items.lineTotal
       ]),
       // Payment methods — how the period's SALES were paid, from payments[].
       // A split bill (cash + M-Pesa STK, etc.) is counted under each method it
@@ -248,18 +258,20 @@ export const getDashboard = async (req, res, next) => {
       ]),
       Receipt.aggregate([
         { $match: curMatch }, { $unwind: "$items" },
+        ...sales, // VAT
         { $group: {
           _id: { $ifNull: ["$items.productId", "$items.productName"] },
           productName: { $first: "$items.productName" },
           unitsSold: { $sum: "$items.quantity" },
-          revenue: { $sum: "$items.lineTotal" },
+          revenue: { $sum: "$lineNet" }, // VAT: was $items.lineTotal
         } },
         { $sort: { revenue: -1 } }, { $limit: 5 },
       ]),
       // branch comparison — only for Super Admin looking at all branches
       branch || !req.user.isAdmin ? Promise.resolve([]) : Receipt.aggregate([
         { $match: curMatch }, { $unwind: "$items" }, ...lookupProduct, ...costEstimationStages(),
-        { $group: { _id: "$branch", revenue: { $sum: "$items.lineTotal" }, cost: { $sum: "$lineCost" } } },
+        ...sales, // VAT
+        { $group: { _id: "$branch", revenue: { $sum: "$lineNet" }, cost: { $sum: "$lineCost" } } }, // VAT: was $items.lineTotal
         { $sort: { revenue: -1 } },
       ]),
       Receipt.find({ ...branchMatch })
@@ -319,16 +331,17 @@ export const getDashboard = async (req, res, next) => {
 
     /* ----- series ----- */
     const cut = (a) => a.map((v, i) => (i > C.now ? null : r2(v)));
-    const [cRev, cCnt] = fill(revRows, C, ["revenue", "count"]);
-    const [cLine, cCost] = fill(profRows, C, ["revenue", "cost"]);
-    const cProfit = cLine.map((v, i) => v - cCost[i]);
+    // customers = receipt count; revenue and profit both come from the item rows (before VAT)
+    const [cCnt] = fill(revRows, C, ["count"]);
+    const [cRev, cCost] = fill(profRows, C, ["revenue", "cost"]);
+    const cProfit = cRev.map((v, i) => v - cCost[i]);
     const series = { cur: { revenue: cut(cRev), customers: cut(cCnt), profit: cut(cProfit) }, prev: null };
 
     let deltas = { revenue: null, customers: null, profit: null };
     if (V) {
-      const [pRev, pCnt] = fill(revRows, V, ["revenue", "count"]);
-      const [pLine, pCost] = fill(profRows, V, ["revenue", "cost"]);
-      const pProfit = pLine.map((v, i) => v - pCost[i]);
+      const [pCnt] = fill(revRows, V, ["count"]);
+      const [pRev, pCost] = fill(profRows, V, ["revenue", "cost"]);
+      const pProfit = pRev.map((v, i) => v - pCost[i]);
       series.prev = { revenue: pRev.map(r2), customers: pCnt, profit: pProfit.map(r2) };
       // like-for-like: previous period only up to the same hour/day as now
       const upto = (a) => sum(a.slice(0, C.now + 1));
@@ -339,7 +352,7 @@ export const getDashboard = async (req, res, next) => {
       };
     }
 
-    const revenue = sum(cRev), customers = sum(cCnt), profit = sum(cProfit), lineRev = sum(cLine);
+    const revenue = sum(cRev), customers = sum(cCnt), profit = sum(cProfit);
 
     /* ----- payment methods ----- */
     const payResult = payRows[0] || { split: [], legacy: [] };
@@ -402,7 +415,7 @@ export const getDashboard = async (req, res, next) => {
       series,
       totals: {
         revenue: Math.round(revenue), customers, profit: Math.round(profit),
-        marginPct: lineRev > 0 ? (profit / lineRev) * 100 : 0,
+        marginPct: revenue > 0 ? (profit / revenue) * 100 : 0,
         avgBasket: customers > 0 ? Math.round(revenue / customers) : 0,
       },
       deltas,
