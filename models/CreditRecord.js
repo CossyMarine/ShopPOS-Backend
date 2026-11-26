@@ -7,6 +7,11 @@ const settlementSchema = new mongoose.Schema({
   reference: { type: String, default: null },
   receivedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   receivedByName: { type: String, default: null },
+  // The shift that was open when this money was collected. The cash belongs to
+  // THAT shift's drawer, even when the bill was given on credit in an older
+  // shift. Null for old settlements and for ones taken by an admin with no
+  // open shift (those fall back to the bill's own shift, see shiftController).
+  shift: { type: mongoose.Schema.Types.ObjectId, ref: "Shift", default: null },
   paidAt: { type: Date, default: Date.now },
 });
 
@@ -36,5 +41,6 @@ creditRecordSchema.virtual("balance").get(function () {
 
 creditRecordSchema.index({ branch: 1, status: 1, dueDate: 1 });
 creditRecordSchema.index({ customerName: 1 });
+creditRecordSchema.index({ "settlements.shift": 1 });
 
 export default mongoose.model("CreditRecord", creditRecordSchema);
