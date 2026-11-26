@@ -320,9 +320,10 @@ export const getDashboard = async (req, res, next) => {
         { $match: { status: { $in: ["open", "partial"] }, ...branchMatch } },
         { $group: { _id: null, owing: { $sum: { $subtract: ["$amount", "$amountPaid"] } }, count: { $sum: 1 } } },
       ]),
-      // credit money collected inside this period
+      // credit money collected inside this period. Records of voided bills are
+      // left out: a voided bill is not a sale, so its settlements are not collections.
       CreditRecord.aggregate([
-        { $match: { ...branchMatch } },
+        { $match: { status: { $ne: "voided" }, ...branchMatch } },
         { $unwind: "$settlements" },
         { $match: { "settlements.paidAt": { $gte: C.start, $lte: C.end } } },
         { $group: { _id: null, amount: { $sum: "$settlements.amount" } } },
