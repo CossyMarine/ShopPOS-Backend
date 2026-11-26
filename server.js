@@ -9,6 +9,7 @@ import jwt from "jsonwebtoken";
 import { applyDuePriceSchedules } from "./utils/applyScheduledPriceChanges.js";
 import { getDisplayState } from "./utils/displayState.js";
 import { checkMpesaConfig } from "./utils/mpesa.js";
+import User from "./models/User.js";
 
 // The date helpers (utils/dateHelpers.js) work out "today", "this week" and
 // "this month" from the server's own clock and assume it is Nairobi time.
@@ -70,8 +71,13 @@ const server = http.createServer(app);
 /* ========================================
    🔌 SOCKET.IO SETUP
    Keep this list in sync with ALLOWED_ORIGINS in app.js.
-   No `credentials: true` here on purpose — the sockets don't use cookies,
-   and the client connects with plain io(SOCKET_URL).
+
+   Sockets connect straight to this server (Vercel rewrites don't proxy
+   websockets), so the first-party auth cookie is NOT sent with them.
+   Instead a signed-in client fetches a short-lived ticket through the
+   normal /api route (GET /api/socket/ticket) and passes it in the
+   handshake: io(url, { auth: { ticket } }). No cookies, so no
+   `credentials: true` is needed here.
 ======================================== */
 const ALLOWED_ORIGINS = [
   "https://shop-pos-frontend-azure.vercel.app",
@@ -88,6 +94,37 @@ export const io = new Server(server, {
 
 /* Make io accessible in routes/controllers via req.app.get("io") */
 app.set("io", io);
+
+/* ========================================
+   🔐 SOCKET AUTH
+   - Valid ticket   -> socket.data.user is set; may join its branch room.
+   - Bad ticket     -> connection refused.
+   - No ticket      -> connects anonymously but can join NO rooms. The
+                       Customer Display is the one anonymous client: it
+                       authenticates itself with its own ticket via
+                       "display:join" below.
+======================================== */
+io.use(async (socket, next) => {
+  const ticket = socket.handshake.auth?.ticket;
+  if (!ticket) return next();
+
+  try {
+    const d = jwt.verify(ticket, process.env.JWT_SECRET, { algorithms: ["HS256"] });
+    if (d.scope !== "socket") throw new Error("wrong scope");
+
+    const user = await User.findById(d.id).select("isAdmin isActive branch");
+    if (!user || !user.isActive) throw new Error("inactive or missing user");
+
+    socket.data.user = {
+      id: String(user._id),
+      isAdmin: !!user.isAdmin,
+      branch: user.branch ? String(user.branch) : null,
+    };
+    next();
+  } catch {
+    next(new Error("unauthorized"));
+  }
+});
 
 /* ========================================
    ⏰ SCHEDULED PRICE CHANGES
@@ -115,9 +152,20 @@ cron.schedule("* * * * *", () => {
 io.on("connection", (socket) => {
   console.log("🔌 New client connected:", socket.id);
 
+  // Every signed-in socket also gets a private room of its own, so a bill can be
+  // pushed to its customer without broadcasting it to everyone.
+  if (socket.data.user) socket.join(`user:${socket.data.user.id}`);
+
+  // Only signed-in sockets can join, and only a "branch:<id>" room: their
+  // own branch (admins: any branch). Everything else is silently ignored.
   socket.on("join_room", (room) => {
-    if (String(room).startsWith("display:")) return; // display rooms need a ticket
-    socket.join(room);
+    const u = socket.data.user;
+    if (!u || typeof room !== "string") return;
+
+    const m = /^branch:([a-f0-9]{24})$/i.exec(room);
+    if (!m) return;
+
+    if (u.isAdmin || u.branch === m[1]) socket.join(room);
   });
 
   socket.on("display:join", async ({ ticket } = {}) => {
