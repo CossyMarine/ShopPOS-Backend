@@ -102,6 +102,10 @@ const receiptSchema = new mongoose.Schema(
       default: null,
     },
 
+        // Name the cashier typed when the bill was put on credit (walk-in, not a user account)
+       creditCustomerName: { type: String, default: null, trim: true },
+       creditCustomerPhone: { type: String, default: null, trim: true },
+
     // "credit" = given on credit and still being paid off. It counts as a
     // sale from the day it was given; it becomes "paid" once fully settled.
     status: {
