@@ -237,8 +237,13 @@ export const approveVoidRequest = async (req, res, next) => {
         receipt.payments = receipt.payments.filter((p) => p.method !== "credit");
         await receipt.save({ session });
         await restockItems(receipt.items, restockNote, reviewedBy, { session });
+
+        // Mark the credit record voided whatever state it is in: still owing
+        // OR already fully settled. A voided bill's settlements must stop
+        // counting as "credit collected". The settlements stay on the record
+        // as the audit trail.
         await CreditRecord.updateOne(
-          { receipt: receipt._id, status: { $in: ["open", "partial"] } },
+          { receipt: receipt._id, status: { $ne: "voided" } },
           { status: "voided", voidedAt: now },
           { session }
         );
