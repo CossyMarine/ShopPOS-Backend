@@ -1,4 +1,5 @@
 // controllers/receipt/receiptManagement.js
+import mongoose from "mongoose";
 import Receipt from "../../models/Receipt.js";
 import Order from "../../models/Order.js";
 import Product from "../../models/Product.js";
@@ -90,36 +91,85 @@ export const addItemsToReceipt = async (req, res, next) => {
 //          while status is "unpaid" and nothing has been paid yet — once
 //          even a partial payment lands, this must go through the
 //          manager-approved void-request flow instead.
+//
+//          Safe against double taps / two tabs: the receipt is CLAIMED with a
+//          single atomic findOneAndUpdate (unpaid -> voided) inside the same
+//          transaction as the restock. Only the request that wins the claim
+//          restocks; the loser finds nothing to claim and restocks nothing.
+//          If the transaction fails, the claim rolls back with it.
 // @route   POST /api/receipts/:id/cancel
 // @access  Protected — cashier, branchManager, admin
 export const cancelUnpaidReceipt = async (req, res, next) => {
   const { id } = req.params;
+  let session;
+  let receipt = null;
 
   try {
     logStart("receiptMgmt", "Cancelling unpaid receipt", { receiptId: id });
 
-    const receipt = await Receipt.findById(id);
-    if (!receipt) {
-      console.warn(`[receiptMgmt] ⚠️ Receipt not found: ${id}`);
-      return res.status(404).json({ message: "Receipt not found" });
-    }
+    session = await mongoose.startSession();
 
-    if (receipt.status !== "unpaid" || (receipt.amountPaid && receipt.amountPaid > 0)) {
-      console.warn(`[receiptMgmt] ⚠️ Receipt ${id} not eligible — status=${receipt.status}, amountPaid=${receipt.amountPaid || 0}`);
+    await session.withTransaction(async () => {
+      receipt = null; // withTransaction may retry — always start clean
+
+      receipt = await Receipt.findOneAndUpdate(
+        {
+          _id: id,
+          status: "unpaid",
+          // nothing paid yet
+          $or: [{ amountPaid: { $exists: false } }, { amountPaid: null }, { amountPaid: { $lte: 0 } }],
+          // an STK push in flight could still turn into real money
+          mpesaStatus: { $ne: "pending" },
+        },
+        {
+          $set: {
+            status: "voided",
+            voidedAt: new Date(),
+            voidReason: "Checkout abandoned before payment",
+          },
+        },
+        { new: true, session }
+      );
+
+      if (!receipt) return; // lost the claim (or not eligible) — nothing written
+
+      await restockItems(
+        receipt.items,
+        `Cancelled before payment — bill ${receipt.billId}`,
+        req.user?._id || null,
+        { session }
+      );
+
+      await Order.findByIdAndUpdate(
+        receipt.order,
+        { status: "cancelled", cancelledAt: new Date() },
+        { session }
+      );
+    });
+
+    if (!receipt) {
+      // Work out why the claim failed, so the caller gets a useful answer.
+      const existing = await Receipt.findById(id).select("status amountPaid mpesaStatus voidReason");
+      if (!existing) {
+        console.warn(`[receiptMgmt] ⚠️ Receipt not found: ${id}`);
+        return res.status(404).json({ message: "Receipt not found" });
+      }
+      if (existing.status === "voided" && existing.voidReason === "Checkout abandoned before payment") {
+        // Double tap / second tab — the first request already did the work.
+        return res.json({ message: "Checkout already cancelled", alreadyCancelled: true });
+      }
+      if (existing.mpesaStatus === "pending") {
+        return res.status(409).json({
+          message: "An M-Pesa payment is still pending on this bill — cancel the M-Pesa request first",
+        });
+      }
+      console.warn(`[receiptMgmt] ⚠️ Receipt ${id} not eligible — status=${existing.status}, amountPaid=${existing.amountPaid || 0}`);
       return res.status(400).json({
         message: "Only a fully-unpaid bill can be cancelled this way — use a void request instead",
       });
     }
 
-    await restockItems(receipt.items, `Cancelled before payment — bill ${receipt.billId}`, req.user?._id || null);
-
-    receipt.status = "voided";
-    receipt.voidedAt = new Date();
-    receipt.voidReason = "Checkout abandoned before payment";
-    await receipt.save();
-
-    await Order.findByIdAndUpdate(receipt.order, { status: "cancelled", cancelledAt: new Date() });
-
+    // Emit only after the transaction has committed.
     const io = req.app.get("io");
     io.to(`branch:${receipt.branch}`).emit("receipt:voided", receipt);
     io.to(`branch:${receipt.branch}`).emit("sale:cancelled", { receiptId: receipt._id, orderId: receipt.order });
@@ -128,6 +178,8 @@ export const cancelUnpaidReceipt = async (req, res, next) => {
     res.json({ message: "Checkout cancelled and stock restored" });
   } catch (error) {
     next(error);
+  } finally {
+    if (session) await session.endSession();
   }
 };
 
