@@ -24,7 +24,9 @@ export const getReceipts = async (req, res, next) => {
   }
 };
 
-// @desc    Get paid receipts (most recent first) — branchManager/admin view
+// @desc    Get paid receipts (most recent first) — branchManager/admin view.
+//          Bills given on credit are NOT here while still owing — they live
+//          in the Credit tab until the customer has paid in full.
 // @route   GET /api/receipts/paid?branch=
 // @access  Protected — branchManager, admin
 export const getPaidReceipts = async (req, res, next) => {
@@ -64,7 +66,9 @@ export const getPendingOnlineReceipts = async (req, res, next) => {
   }
 };
 
-// @desc    Today's paid vs unpaid totals — powers the "All" tab summary bar
+// @desc    Today's paid, credit and unpaid totals — powers the "All" tab summary bar.
+//          "credit" = bills given on credit today that are still owing. A bill
+//          given on credit and fully settled the same day shows under paid.
 // @route   GET /api/receipts/summary/today?branch=
 // @access  Protected — cashier, branchManager, admin
 export const getReceiptsTodaySummary = async (req, res, next) => {
@@ -76,9 +80,14 @@ export const getReceiptsTodaySummary = async (req, res, next) => {
       ? { branch: new mongoose.Types.ObjectId(req.query.branch) }
       : {};
 
-    const [paidAgg, unpaidAgg] = await Promise.all([
+    const [paidAgg, creditAgg, unpaidAgg] = await Promise.all([
       Receipt.aggregate([
         { $match: { status: "paid", paidAt: { $gte: startOfDay, $lte: endOfDay }, ...branchMatch } },
+        { $group: { _id: null, total: { $sum: "$subtotal" }, count: { $sum: 1 } } },
+      ]),
+      // paidAt on a credit bill is the day it was given
+      Receipt.aggregate([
+        { $match: { status: "credit", paidAt: { $gte: startOfDay, $lte: endOfDay }, ...branchMatch } },
         { $group: { _id: null, total: { $sum: "$subtotal" }, count: { $sum: 1 } } },
       ]),
       Receipt.aggregate([
@@ -90,6 +99,8 @@ export const getReceiptsTodaySummary = async (req, res, next) => {
     const summary = {
       paidToday: paidAgg[0]?.total || 0,
       paidTodayCount: paidAgg[0]?.count || 0,
+      creditToday: creditAgg[0]?.total || 0,
+      creditTodayCount: creditAgg[0]?.count || 0,
       unpaidToday: unpaidAgg[0]?.total || 0,
       unpaidTodayCount: unpaidAgg[0]?.count || 0,
     };
