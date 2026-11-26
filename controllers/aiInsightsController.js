@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import axios from "axios";
 import Product from "../models/Product.js";
 import Receipt from "../models/Receipt.js";
+import CreditRecord from "../models/CreditRecord.js";
 import VoidRequest from "../models/VoidRequest.js";
 import Attendance from "../models/Attendance.js";
 import LeaveRequest from "../models/LeaveRequest.js";
@@ -13,16 +14,20 @@ import { AppError } from "../utils/AppError.js";
 // Override with GEMINI_MODEL in .env if you want a different model.
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.1-flash";
 
+// Receipt statuses that count as a sale (paid, or given on credit).
+const SOLD = ["paid", "credit"];
+
 const stockOf = (product) =>
   (product.batches || []).reduce((sum, b) => sum + b.quantity, 0);
 
 // Gathers a compact snapshot of everything the AI needs to reason about —
-// stock risk, void anomalies, attendance/overtime, and payroll/wage risk.
+// stock risk, void anomalies, attendance/overtime, credit and payroll/wage risk.
 const buildStoreSnapshot = async (branchId) => {
   const branchMatch = branchId
     ? { branch: new mongoose.Types.ObjectId(branchId) }
     : {};
   const { start: startOfDay, end: endOfDay } = getKenyanDayBounds();
+  const nowDate = new Date();
 
   const [
     activeProducts,
@@ -33,13 +38,15 @@ const buildStoreSnapshot = async (branchId) => {
     closedAttendanceToday,
     pendingLeave,
     wageProfiles,
+    creditOpenAgg,
+    creditGivenTodayAgg,
   ] = await Promise.all([
     Product.find({ ...branchMatch, isActive: true })
       .select("name category batches reorderLevel sellingPrice packSize caseLabel casePrice")
       .lean(),
 
     Receipt.aggregate([
-      { $match: { status: "paid", paidAt: { $gte: startOfDay, $lte: endOfDay }, ...branchMatch } },
+      { $match: { status: { $in: SOLD }, paidAt: { $gte: startOfDay, $lte: endOfDay }, ...branchMatch } },
       { $group: { _id: null, total: { $sum: "$subtotal" }, count: { $sum: 1 } } },
     ]),
 
@@ -72,6 +79,38 @@ const buildStoreSnapshot = async (branchId) => {
     WageProfile.find(branchMatch)
       .populate("user", "fullName role isActive")
       .lean(),
+
+    // Credit still owed right now, and how much of it is past its pay date
+    CreditRecord.aggregate([
+      { $match: { status: { $in: ["open", "partial"] }, ...branchMatch } },
+      {
+        $group: {
+          _id: null,
+          outstanding: { $sum: { $subtract: ["$amount", "$amountPaid"] } },
+          count: { $sum: 1 },
+          overdue: {
+            $sum: {
+              $cond: [
+                { $and: [{ $ne: ["$dueDate", null] }, { $lt: ["$dueDate", nowDate] }] },
+                { $subtract: ["$amount", "$amountPaid"] },
+                0,
+              ],
+            },
+          },
+          overdueCount: {
+            $sum: {
+              $cond: [{ $and: [{ $ne: ["$dueDate", null] }, { $lt: ["$dueDate", nowDate] }] }, 1, 0],
+            },
+          },
+        },
+      },
+    ]),
+
+    // Credit given today
+    CreditRecord.aggregate([
+      { $match: { status: { $ne: "voided" }, createdAt: { $gte: startOfDay, $lte: endOfDay }, ...branchMatch } },
+      { $group: { _id: null, amount: { $sum: "$amount" }, count: { $sum: 1 } } },
+    ]),
   ]);
 
   // ---- Inventory: low stock + bulk-break margin candidates ----
@@ -142,10 +181,21 @@ const buildStoreSnapshot = async (branchId) => {
 
   const revenue = revenueTodayAgg[0] || { total: 0, count: 0 };
   const voided = voidsToday[0] || { amount: 0, count: 0 };
+  const creditOpen = creditOpenAgg[0] || { outstanding: 0, count: 0, overdue: 0, overdueCount: 0 };
+  const creditGiven = creditGivenTodayAgg[0] || { amount: 0, count: 0 };
 
   return {
     store: { date: startOfDay.toISOString().split("T")[0], branchScoped: Boolean(branchId) },
-    salesToday: { revenue: revenue.total, paidReceipts: revenue.count, voidedAmount: voided.amount, voidedCount: voided.count },
+    // Sales include bills given on credit (they count on the day given).
+    salesToday: { revenue: revenue.total, soldReceipts: revenue.count, voidedAmount: voided.amount, voidedCount: voided.count },
+    credit: {
+      givenToday: Math.round(creditGiven.amount),
+      givenTodayCount: creditGiven.count,
+      outstanding: Math.round(creditOpen.outstanding),
+      outstandingCount: creditOpen.count,
+      overdue: Math.round(creditOpen.overdue),
+      overdueCount: creditOpen.overdueCount,
+    },
     lowStockProducts,
     bulkOpportunities,
     pendingVoidRequests: voidsPending.map((v) => ({
@@ -168,6 +218,7 @@ const buildStoreSnapshot = async (branchId) => {
       overtimeHours: Math.round(totalOvertimeHours * 10) / 10,
       pendingVoids: voidsPending.length,
       bulkOpportunities: bulkOpportunities.length,
+      overdueCredits: creditOpen.overdueCount,
     },
   };
 };
@@ -189,7 +240,7 @@ ${JSON.stringify(snapshot)}
 Return an object with exactly these four keys, each an array of short,
 actionable strings (max ~20 words each, 2-5 items per key, skip a key's
 array-contents if there is genuinely nothing to flag):
-- "alerts": critical stockouts, pending void/refund anomalies, anything needing urgent attention today
+- "alerts": critical stockouts, pending void/refund anomalies, overdue or fast-growing customer credit, anything needing urgent attention today
 - "inventory": reorder priorities and bulk-to-unit margin opportunities from the data given
 - "workforce": attendance/overtime observations from the clock-in data given
 - "payroll": upcoming payouts, unpaid staff, or wage-profile risks from the data given
@@ -254,7 +305,7 @@ Respond with raw JSON only:
   }
 };
 
-// @desc    Run a live AI audit across stock, voids, attendance, and payroll
+// @desc    Run a live AI audit across stock, voids, attendance, credit and payroll
 // @route   GET /api/ai-insights/audit?branch=
 // @access  Protected — admin, branchManager
 export const runStoreAudit = async (req, res, next) => {
