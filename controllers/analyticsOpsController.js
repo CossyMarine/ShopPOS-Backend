@@ -13,6 +13,7 @@ import PettyCash from "../models/PettyCash.js";
 import Shift from "../models/Shift.js";
 import AdminSettings from "../models/AdminSettings.js";
 import { resolveAnalyticsRange, costEstimationStages } from "./analyticsController.js";
+import { loadShiftTotals } from "./shiftController.js";
 import { salesStages } from "../utils/vatReport.js";
 import { logStart, logSuccess } from "../utils/requestLogger.js";
 import { badRequest } from "../utils/AppError.js";
@@ -80,9 +81,9 @@ const belowCostByDay = (match) =>
 // Closed shifts: expected cash = opening float + cash sales - petty cash (same
 // formula the shift close screen uses), compared with what the cashier counted.
 //
-// Credit: cash collected on a credit bill only counts toward a shift if it was
-// received before that shift closed — exactly as in shiftController — so a
-// settlement weeks later can't change an old shift's expected cash.
+// The cash figure comes from loadShiftTotals in shiftController, so this report
+// and the shift screens can never disagree. Credit settlements are counted in
+// the shift that collected the money (see shiftController).
 const loadTillRows = async (branch, start, end) => {
   const shifts = await Shift.find({
     status: "closed",
@@ -96,26 +97,14 @@ const loadTillRows = async (branch, start, end) => {
     .lean();
   if (!shifts.length) return [];
   const ids = shifts.map((s) => s._id);
-  const closedAtById = new Map(shifts.map((s) => [String(s._id), s.closedAt]));
-  const [receipts, petty] = await Promise.all([
-    Receipt.find({ shift: { $in: ids }, status: { $in: ["paid", "partial", "credit"] } }).select("shift payments").lean(),
+  const [totalsOf, petty] = await Promise.all([
+    loadShiftTotals(shifts),
     PettyCash.find({ shift: { $in: ids } }).select("shift amount").lean(),
   ]);
-  const cash = {};
   const out = {};
-  receipts.forEach((r) => {
-    const payments = r.payments || [];
-    const hasCredit = payments.some((p) => p.method === "credit");
-    const shiftEnd = closedAtById.get(String(r.shift));
-    payments.forEach((p) => {
-      if (p.method !== "cash") return;
-      if (hasCredit && p.paidAt && shiftEnd && new Date(p.paidAt) > new Date(shiftEnd)) return;
-      cash[r.shift] = (cash[r.shift] || 0) + p.amount;
-    });
-  });
   petty.forEach((e) => { out[e.shift] = (out[e.shift] || 0) + e.amount; });
   return shifts.map((s) => {
-    const expected = (s.openingFloat || 0) + (cash[s._id] || 0) - (out[s._id] || 0);
+    const expected = (s.openingFloat || 0) + totalsOf(s._id).cash - (out[s._id] || 0);
     return {
       shiftId: s._id,
       date: dayKey(s.closedAt),
