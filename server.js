@@ -10,6 +10,13 @@ import { applyDuePriceSchedules } from "./utils/applyScheduledPriceChanges.js";
 import { getDisplayState } from "./utils/displayState.js";
 import { checkMpesaConfig } from "./utils/mpesa.js";
 
+// The date helpers (utils/dateHelpers.js) work out "today", "this week" and
+// "this month" from the server's own clock and assume it is Nairobi time.
+// Render servers run on UTC, which shifted every "today" range by 3 hours, so
+// sales made between 00:00 and 03:00 landed on the wrong day. Kenya has no
+// daylight saving, so pinning the zone is safe.
+process.env.TZ = "Africa/Nairobi";
+
 dotenv.config();
 checkMpesaConfig();
 
