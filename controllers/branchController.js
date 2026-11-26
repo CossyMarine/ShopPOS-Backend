@@ -132,21 +132,24 @@ export const getAllStaff = async (req, res, next) => {
 // @desc    Get the current logged-in staff member's own branch (name only) —
 //          used for things like printed labels/receipts where a non-admin
 //          needs their branch name but isn't allowed to list all branches.
+//          An admin working the till uses the branch they have selected.
 // @route   GET /api/branches/mine
 // @access  Protected — any authenticated staff member
 export const getMyBranch = async (req, res, next) => {
   try {
     logStart("branch", "Loading own branch", { user: req.user._id });
 
-    if (!req.user.branch) {
+    const branchId = req.user.branch || (req.user.isAdmin ? req.user.selectedBranch : null);
+
+    if (!branchId) {
       logSuccess("branch", "No branch assigned", { user: req.user._id });
       return res.json(null);
     }
 
-    const branch = await Branch.findById(req.user.branch).select("name allowCredit");
+    const branch = await Branch.findById(branchId).select("name allowCredit");
 
     if (!branch) {
-      console.warn(`[branch] ⚠️ Assigned branch not found: ${req.user.branch}`);
+      console.warn(`[branch] ⚠️ Assigned branch not found: ${branchId}`);
       return res.json(null);
     }
 
