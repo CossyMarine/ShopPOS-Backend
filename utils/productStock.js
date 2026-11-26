@@ -2,28 +2,11 @@
 import Product from "../models/Product.js";
 import { badRequest } from "./AppError.js";
 
-// Deducts qtyToSell from the product's oldest batches first (FIFO), and
-// returns exactly what it cost — a quantity-weighted average across however
-// many batches the sale spanned. Callers should attach avgCostPerUnit onto
-// the corresponding order/receipt line as costPriceAtSale.
-//
-// Pass { session } when this is one step in a larger atomic operation
-// (checkout, void approval, stock adjustment approval) — the caller owns
-// starting/committing/aborting the transaction; this function just
-// participates in it.
-//
-// Pass { allowNegative: true } ONLY for offline-sync replay, never for a
-// live checkout. A live sale can always trust the stock count it's reading
-// right now, so insufficient stock there is a real, current problem and
-// should hard-fail. An offline sale already happened in the real world —
-// rung up, paid for, receipt printed — hours or days before it reaches the
-// server, so by the time it syncs, another register may have legitimately
-// sold the same units first. Rejecting it outright would mean losing a
-// completed transaction from the books entirely. Instead, when allowed to
-// go negative, the shortfall is costed at the last known batch price (or
-// the average of whatever batches exist) and reported back to the caller,
-// so the order can be flagged for manual stock reconciliation instead of
-// silently vanishing or silently corrupting the count.
+// Deducts qtyToSell from the product's oldest batches first (FIFO) and returns
+// what it cost — a quantity-weighted average across the batches touched.
+// Attach avgCostPerUnit to the order/receipt line as costPriceAtSale.
+// Pass { session } when this is one step in a larger atomic operation.
+// Pass { allowNegative: true } ONLY for offline-sync replay.
 export async function deductStockFIFO(product, qtyToSell, { session, allowNegative = false } = {}) {
   const available = product.batches.reduce((s, b) => s + b.quantity, 0);
   let remaining = qtyToSell;
@@ -41,11 +24,8 @@ export async function deductStockFIFO(product, qtyToSell, { session, allowNegati
   let shortfall = 0;
   if (remaining > 0) {
     if (!allowNegative) {
-            throw badRequest(`Only ${available} of ${product.name} left in stock`);
+      throw badRequest(`Only ${available} of ${product.name} left in stock`);
     }
-    // Cost the unmet portion at the most recent batch's price if any batches
-    // exist at all, otherwise fall back to the product's current sellingPrice
-    // so costPriceAtSale is never left as a nonsensical 0 for a real sale.
     const lastKnownCost = product.batches.length > 0
       ? product.batches[product.batches.length - 1].costPerUnit
       : product.sellingPrice;
@@ -60,22 +40,41 @@ export async function deductStockFIFO(product, qtyToSell, { session, allowNegati
   return {
     totalCost,
     avgCostPerUnit: qtyToSell > 0 ? totalCost / qtyToSell : 0,
-    shortfall, // > 0 means this sale pushed stock below zero — caller should flag it
+    shortfall,
   };
 }
 
-// Reverses a FIFO deduction — adds each line's quantity back as a new batch
-// at the unit price it was sold at, so cancelling a bill never silently
-// loses stock. Used when a checkout is abandoned before any payment lands,
-// or when a void request is approved.
+// The cost a restocked unit should carry. NEVER the selling price.
+// 1) the cost captured at sale time, 2) the product's current weighted-average
+// batch cost, 3) the newest batch's cost, 4) 0 as a last resort.
+function resolveRestockCost(line, product) {
+  const captured = Number(line.costPriceAtSale);
+  if (line.costPriceAtSale != null && Number.isFinite(captured) && captured >= 0) {
+    return captured;
+  }
+
+  const batches = product.batches || [];
+  const totalQty = batches.reduce((s, b) => s + b.quantity, 0);
+  if (totalQty > 0) {
+    const totalCost = batches.reduce((s, b) => s + b.quantity * b.costPerUnit, 0);
+    return totalCost / totalQty;
+  }
+  if (batches.length > 0) return batches[batches.length - 1].costPerUnit;
+  return 0;
+}
+
+// Reverses a FIFO deduction — adds each line's quantity back as a new batch at
+// the cost it was ORIGINALLY bought at, so cancelling or voiding a bill never
+// changes the product's average cost.
 export async function restockItems(items, note, restockedBy = null, { session } = {}) {
   for (const line of items) {
-    if (!line.productId) continue; // manually-entered fallback line, nothing to restock
+    if (!line.productId) continue; // manual fallback line, nothing to restock
     const product = await Product.findById(line.productId).session(session || null);
     if (!product) continue;
+
     product.batches.push({
       quantity: line.quantity,
-      costPerUnit: line.unitPrice,
+      costPerUnit: resolveRestockCost(line, product),
       expiryDate: null,
       receivedBy: restockedBy,
       supplierNote: note,
