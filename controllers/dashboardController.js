@@ -9,9 +9,11 @@
 // receipt.paidAt — for credit bills that is the day the credit was GIVEN, so
 // revenue, profit and items land on the day the goods left the shop.
 //
-// VAT: revenue, profit, top items and branch figures all use lineNet (the
-// amount before VAT), exactly like the Analytics page, so the two always agree.
-// When VAT is off, lineNet is just lineTotal and nothing changes.
+// VAT: when the VAT switch is ON, this dashboard's revenue, profit, top items
+// and branch figures include VAT (linePaid = what the customer paid). The
+// Analytics page and the VAT report still work on the before-VAT amount, so
+// the two differ by the VAT collected. When VAT is off, linePaid is just
+// lineTotal and nothing changes.                                   // CHANGED
 
 import mongoose from "mongoose";
 import Receipt from "../models/Receipt.js";
@@ -168,6 +170,13 @@ export const getDashboard = async (req, res, next) => {
     const vatCfg = s.vat || {};
     const sales = salesStages(!!vatCfg.enabled, vatCfg.rate);
 
+    // CHANGED: receipt-level amount for this dashboard only.
+    // VAT on  -> subtotal + VAT (what the customer paid)
+    // VAT off -> subtotal, exactly as before
+    const grossReceipt = vatCfg.enabled
+      ? { $add: ["$subtotal", { $ifNull: ["$vatAmount", 0] }] }
+      : "$subtotal";
+
     const np = parts(new Date(), tz);
     const nowRef = { y: np.year, m: np.month - 1, d: np.day, hour: np.hour };
 
@@ -216,12 +225,13 @@ export const getDashboard = async (req, res, next) => {
         { $match: winMatch }, { $addFields: { p: dp } },
         { $group: { _id: gid, count: { $sum: 1 } } },
       ]),
-      // item-level revenue (before VAT) and cost per bucket — revenue AND profit come from here
+      // item-level revenue and cost per bucket — revenue AND profit come from here.
+      // CHANGED: revenue is linePaid (VAT included when the VAT switch is on).
       Receipt.aggregate([
         { $match: winMatch }, { $addFields: { p: dp } }, { $unwind: "$items" }, ...lookupProduct,
         ...costEstimationStages(),
         ...sales, // VAT
-        { $group: { _id: gid, revenue: { $sum: "$lineNet" }, cost: { $sum: "$lineCost" } } }, // VAT: was $items.lineTotal
+        { $group: { _id: gid, revenue: { $sum: "$linePaid" }, cost: { $sum: "$lineCost" } } }, // CHANGED: was $lineNet
       ]),
       // Payment methods — how the period's SALES were paid, from payments[].
       // A split bill (cash + M-Pesa STK, etc.) is counted under each method it
@@ -263,7 +273,7 @@ export const getDashboard = async (req, res, next) => {
           _id: { $ifNull: ["$items.productId", "$items.productName"] },
           productName: { $first: "$items.productName" },
           unitsSold: { $sum: "$items.quantity" },
-          revenue: { $sum: "$lineNet" }, // VAT: was $items.lineTotal
+          revenue: { $sum: "$linePaid" }, // CHANGED: was $lineNet
         } },
         { $sort: { revenue: -1 } }, { $limit: 5 },
       ]),
@@ -271,7 +281,7 @@ export const getDashboard = async (req, res, next) => {
       branch || !req.user.isAdmin ? Promise.resolve([]) : Receipt.aggregate([
         { $match: curMatch }, { $unwind: "$items" }, ...lookupProduct, ...costEstimationStages(),
         ...sales, // VAT
-        { $group: { _id: "$branch", revenue: { $sum: "$lineNet" }, cost: { $sum: "$lineCost" } } }, // VAT: was $items.lineTotal
+        { $group: { _id: "$branch", revenue: { $sum: "$linePaid" }, cost: { $sum: "$lineCost" } } }, // CHANGED: was $lineNet
         { $sort: { revenue: -1 } },
       ]),
       Receipt.find({ ...branchMatch })
@@ -290,7 +300,7 @@ export const getDashboard = async (req, res, next) => {
           ],
           ...branchMatch,
         } },
-        { $group: { _id: null, amount: { $sum: "$subtotal" }, count: { $sum: 1 } } },
+        { $group: { _id: null, amount: { $sum: grossReceipt }, count: { $sum: 1 } } }, // CHANGED: was "$subtotal"
       ]),
       VoidRequest.find({ status: "pending" })
         .populate({ path: "receipt", select: "_id", ...(branch ? { match: { branch } } : {}) })
@@ -332,7 +342,8 @@ export const getDashboard = async (req, res, next) => {
 
     /* ----- series ----- */
     const cut = (a) => a.map((v, i) => (i > C.now ? null : r2(v)));
-    // customers = receipt count; revenue and profit both come from the item rows (before VAT)
+    // customers = receipt count; revenue and profit both come from the item rows
+    // (VAT included when the VAT switch is on)
     const [cCnt] = fill(revRows, C, ["count"]);
     const [cRev, cCost] = fill(profRows, C, ["revenue", "cost"]);
     const cProfit = cRev.map((v, i) => v - cCost[i]);
