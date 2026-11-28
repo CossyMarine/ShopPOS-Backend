@@ -40,6 +40,8 @@ const receiptSchema = new mongoose.Schema(
     invoice:    { type: String, default: "" },
     invoiceKey: { type: String, default: "" },
     po:         { type: String, default: "" },
+    supplierPin: { type: String, default: "" },
+    etimsNo:     { type: String, default: "" },
     deliveryDate: { type: Date, default: Date.now },
     dueDate:    { type: Date, default: null },
     driver:     { type: String, default: "" },
