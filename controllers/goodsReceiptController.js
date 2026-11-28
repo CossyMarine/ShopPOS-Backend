@@ -5,7 +5,8 @@ import Supplier from "../models/Supplier.js";
 import GoodsReceipt from "../models/GoodsReceipt.js";
 import Counter from "../models/Counter.js";
 import AuditLog from "../models/AuditLog.js";
-import { calcDelivery, stockOf, baseAbbr, r2, r4, VAT_RATE } from "../utils/receivingMath.js";
+import AdminSettings from "../models/AdminSettings.js"; // CHANGED: VAT settings
+import { calcDelivery, stockOf, baseAbbr, r2, r4 } from "../utils/receivingMath.js"; // CHANGED: VAT_RATE no longer needed
 import { AppError, badRequest, notFound, forbidden } from "../utils/AppError.js";
 
 // @route POST /api/goods-receipts   @access storekeeper, branchManager, admin
@@ -25,7 +26,15 @@ export const createGoodsReceipt = async (req, res, next) => {
     products.forEach((p) => { if (!p.isActive) throw badRequest(`${p.name} is archived`); });
     const byId = new Map(products.map((p) => [String(p._id), p]));
 
-    const calc = calcDelivery(b, byId);
+    // CHANGED: VAT always comes from Admin Settings, never from the client.
+    // - rate: the configured rate
+    // - not VAT-registered: input VAT can't be claimed, so it always goes into cost
+    const vatCfg = (await AdminSettings.getSettings()).vat || {};
+    const registered = !!vatCfg.enabled;
+    const vatRate = Number(vatCfg.rate) > 0 ? Number(vatCfg.rate) : 16;
+    const vatNR = registered ? !!b.vatNR : true;
+
+    const calc = calcDelivery({ ...b, vatRate, vatNR }, byId); // CHANGED
     if (calc.errors.length) throw badRequest(calc.errors[0], { errors: calc.errors });
 
     // Supplier: pick from list, match by typed name, or (optionally) create
@@ -107,6 +116,7 @@ export const createGoodsReceipt = async (req, res, next) => {
           receivedBase: c.recv, rejectedBase: c.rej, freeBase: c.freeBase, addedBase: c.added,
           stockBefore: before, stockAfter: before + c.added,
           unitPrice: r4(c.unitPrice), gross: r2(c.gross), discount: r2(c.disc), net: r2(c.net), effCost: r4(c.eff),
+          vatClass: c.vatClass, exVat: r2(c.exVat), vat: r2(c.vat), // CHANGED: per-line VAT
           discounts: c.discounts.map((d) => ({ ...d, amount: r2(d.amount) })),
           expiryDate: line.expiryDate || null, batchNo: String(line.batchNo || "").trim(),
           newSellingPrice: p.sellingPrice,
@@ -121,10 +131,13 @@ export const createGoodsReceipt = async (req, res, next) => {
         _id: receiptId, no, branch,
         supplier: supplier?._id || null, supplierName, supplierKey: supplierName.toLowerCase(),
         invoice, invoiceKey: invoice.toLowerCase(), po: b.po || "",
+        supplierPin: supplier?.kraPin || "",              // CHANGED: for VAT claims
+        etimsNo: String(b.etimsNo || "").trim(),          // CHANGED: for VAT claims
         deliveryDate: delivery, dueDate, driver: b.driver || "", terms: b.terms || "Cash on delivery",
         receivedBy: req.user._id, receivedByName: b.receivedByName || req.user.fullName || "", note: b.note || "",
         discPct: Number(b.discPct) || 0, discAmt: Number(b.discAmt) || 0,
-        vat: { on: !!b.vatOn, mode: b.vatMode || "excl", notRecoverable: !!b.vatNR, rate: VAT_RATE * 100 },
+        // CHANGED: stores the real rate used and the enforced recoverable flag
+        vat: { on: !!b.vatOn, mode: b.vatMode === "incl" ? "incl" : "excl", notRecoverable: vatNR, rate: vatRate },
         totals: calc.totals, lines,
       }], { session });
 
