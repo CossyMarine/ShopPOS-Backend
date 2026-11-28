@@ -1,5 +1,6 @@
 // utils/receivingMath.js — shared by backend and frontend (identical file)
-export const VAT_RATE = 0.16;
+export const VAT_RATE = 0.16; // fallback only; the real rate comes from Admin Settings (b.vatRate)
+export const VAT_CLASSES = ["standard", "zero", "exempt"];
 const num = (v) => Number(v) || 0;
 export const r2 = (n) => Math.round(num(n) * 100) / 100;
 export const r3 = (n) => Math.round(num(n) * 1000) / 1000;
@@ -72,37 +73,65 @@ export function calcLine(l, p) {
            freeValue: freeBase * unitPrice, discounts: out, errors: err };
 }
 
-// b = { lines, discPct, discAmt, delivery, vatOn, vatMode:'excl'|'incl', vatNR }
+// b = { lines, discPct, discAmt, delivery, vatOn, vatMode:'excl'|'incl', vatNR, vatRate }
+//   vatRate = percent, e.g. 16 (from Admin Settings; falls back to VAT_RATE)
+//   line.vatClass = optional override: 'standard' | 'zero' | 'exempt'
+//                   (default: the product's own vatClass, else 'standard')
+//
+// VAT is worked out PER LINE. Only "standard" lines carry VAT, so a mixed
+// invoice (e.g. bread/milk + soap) is handled correctly. The invoice-level
+// "incl/excl" choice applies to the standard lines only.
 export function calcDelivery(b, byId) {
   const errors = [];
+  const rate = (num(b.vatRate) > 0 ? num(b.vatRate) : VAT_RATE * 100) / 100;
+
   const L = b.lines.map((line) => {
     const p = byId.get(String(line.product));
     const c = calcLine(line, p);
     c.errors.forEach((e) => errors.push(`${p.name}: ${e}`));
+    c.vatClass = VAT_CLASSES.includes(line.vatClass)
+      ? line.vatClass
+      : (VAT_CLASSES.includes(p.vatClass) ? p.vatClass : "standard");
     return { line, p, c };
   });
+
   const sum = (f) => L.reduce((s, x) => s + f(x.c), 0);
   const sumNet = sum((c) => c.net), sumAdded = sum((c) => c.added), sumGross = sum((c) => c.gross);
   const lineDisc = sum((c) => c.disc), freeValue = sum((c) => c.freeValue);
 
+  // Invoice-level discount, spread over the lines in proportion to their net value
   const ivP = Math.min(Math.max(num(b.discPct), 0), 100), ivA = Math.max(num(b.discAmt), 0);
   const dP = sumNet * ivP / 100, dA = Math.min(ivA, sumNet - dP), D = dP + dA;
-  const afterDisc = sumNet - D;
-  let vat = 0, exVat = afterDisc, payable = afterDisc;
-  if (b.vatOn) {
-    if (b.vatMode === "incl") { exVat = afterDisc / (1 + VAT_RATE); vat = afterDisc - exVat; }
-    else { vat = afterDisc * VAT_RATE; payable = afterDisc + vat; }
-  }
-  const del = Math.max(num(b.delivery), 0);
-  const total = payable + del;
-  const landed = exVat + (b.vatOn && b.vatNR ? vat : 0) + del;
 
+  const del = Math.max(num(b.delivery), 0);
+  const nr = !!(b.vatOn && b.vatNR); // VAT not recoverable: becomes part of the cost
+
+  let vat = 0, exVat = 0, payable = 0;
   L.forEach(({ c }) => {
     const share = sumNet > 0 ? c.net / sumNet : (sumAdded > 0 ? c.added / sumAdded : 0);
-    c.landed = landed * share;
-    c.eff = c.added > 0 ? c.landed / c.added : 0; // real cost per base unit
+    const after = c.net - D * share;                 // line value after all discounts
+    const taxed = !!b.vatOn && c.vatClass === "standard";
+
+    let ex = after, v = 0, pay = after;
+    if (taxed) {
+      if (b.vatMode === "incl") { ex = after / (1 + rate); v = after - ex; } // VAT already in the price
+      else { v = after * rate; pay = after + v; }                            // add VAT on top
+    }
+
+    c.exVat = ex;                                    // value before VAT
+    c.vat = v;                                       // input VAT on this line
+    c.payable = pay;                                 // what you pay the supplier for this line
+    c.landed = ex + (nr ? v : 0) + del * share;      // real cost of this line
+    c.eff = c.added > 0 ? c.landed / c.added : 0;    // real cost per base unit
+
+    vat += v; exVat += ex; payable += pay;
   });
 
-  return { L, errors, totals: { gross: r2(sumGross), lineDisc: r2(lineDisc), invDisc: r2(D), free: r2(freeValue),
-           vat: r2(vat), delivery: r2(del), total: r2(total), saved: r2(lineDisc + D + freeValue) } };
-                }
+  const total = payable + del;
+
+  return { L, errors, totals: {
+    gross: r2(sumGross), lineDisc: r2(lineDisc), invDisc: r2(D), free: r2(freeValue),
+    exVat: r2(exVat), vat: r2(vat), delivery: r2(del), total: r2(total),
+    saved: r2(lineDisc + D + freeValue),
+  } };
+      }
