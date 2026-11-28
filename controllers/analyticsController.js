@@ -731,7 +731,9 @@ export const getVatReport = async (req, res, next) => {
       return o;
     };
     const zero = () => ({ net: 0, vat: 0, paid: 0, cost: 0, derivedVat: 0 });
-    const rd = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Math.round(v)]));
+    // CHANGED: VAT figures are kept to 2 decimals (needed for filing), not whole shillings
+    const to2 = (v) => Math.round((Number(v || 0) + Number.EPSILON) * 100) / 100;
+    const rd = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, to2(v)]));
     const pad = (n) => String(n).padStart(2, "0");
 
     const totals = zero();
@@ -756,11 +758,12 @@ export const getVatReport = async (req, res, next) => {
       priceMode: vat.priceMode,
       totals: {
         ...rd(totals),
-        profitExVat: Math.round(totals.net - totals.cost),
-        profitInclVat: Math.round(totals.paid - totals.cost),
-        claimable: Math.round(input.claimable),
-        notClaimable: Math.round(input.notClaimable),
-        payable: Math.round(totals.vat - input.claimable),
+        profitExVat: to2(totals.net - totals.cost),
+        profitInclVat: to2(totals.paid - totals.cost),
+        claimable: to2(input.claimable),        // input VAT you can claim back
+        notClaimable: to2(input.notClaimable),  // input VAT that went into cost
+        // CHANGED (rounding only): output VAT collected minus input VAT claimable
+        payable: to2(totals.vat - input.claimable),
       },
       daily: Object.entries(dayMap)
         .sort(([a], [b]) => a.localeCompare(b))
