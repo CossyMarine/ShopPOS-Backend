@@ -19,8 +19,8 @@ const lineSchema = new mongoose.Schema(
     discount:     Number,
     net:          Number,
     vatClass: { type: String, enum: ["standard", "zero", "exempt"], default: "standard" },
-    exVat:    Number,
-    vat:      Number,
+    exVat:    Number,       // line value before VAT, after discounts
+    vat:      Number,       // VAT on this line (0 for zero-rated / exempt)
     effCost:      Number,   // real landed cost per base unit
     discounts: [{ _id: false, type: {type :String}, val: Number, unit: String, unitName: String, amount: Number }],
     expiryDate:   Date,
@@ -40,8 +40,8 @@ const receiptSchema = new mongoose.Schema(
     invoice:    { type: String, default: "" },
     invoiceKey: { type: String, default: "" },
     po:         { type: String, default: "" },
-    supplierPin: { type: String, default: "" },
-    etimsNo:     { type: String, default: "" },
+    supplierPin: { type: String, default: "" },   // supplier KRA PIN, copied at receiving time
+    etimsNo:     { type: String, default: "" },   // supplier eTIMS / tax invoice no. (needed to claim input VAT)
     deliveryDate: { type: Date, default: Date.now },
     dueDate:    { type: Date, default: null },
     driver:     { type: String, default: "" },
@@ -51,7 +51,7 @@ const receiptSchema = new mongoose.Schema(
     note:       { type: String, default: "" },
     discPct: Number, discAmt: Number,
     vat: { on: Boolean, mode: String, notRecoverable: Boolean, rate: Number },
-    totals: { gross: Number, lineDisc: Number, invDisc: Number, free: Number, vat: Number, delivery: Number, total: Number, saved: Number },
+    totals: { gross: Number, lineDisc: Number, invDisc: Number, free: Number, exVat: Number, vat: Number, delivery: Number, total: Number, saved: Number },
     lines: [lineSchema],
   },
   { timestamps: true }
