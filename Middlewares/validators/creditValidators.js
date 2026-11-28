@@ -30,3 +30,13 @@ export const validateSettleMine = [
   body("payments.*.amount").isFloat({ gt: 0 }).withMessage("Each amount must be positive"),
   body("payments.*.reference").optional({ values: "falsy" }).isString().trim().isLength({ max: 60 }),
 ];
+
+export const validateSettleCustomer = [
+  body("branch").isMongoId().withMessage("Branch is required"),
+  body("customerName").isString().trim().notEmpty().isLength({ max: 80 }),
+  body("creditId").optional({ values: "falsy" }).isMongoId().withMessage("Invalid credit id"),
+  body("payments").isArray({ min: 1, max: 6 }).withMessage("Add at least one payment"),
+  body("payments.*.method").isIn(CREDIT_METHODS).withMessage("Invalid payment method"),
+  body("payments.*.amount").isFloat({ gt: 0 }).withMessage("Each amount must be positive"),
+  body("payments.*.reference").optional({ values: "falsy" }).isString().trim().isLength({ max: 60 }),
+];
