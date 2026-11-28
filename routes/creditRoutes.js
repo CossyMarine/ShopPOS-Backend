@@ -4,7 +4,7 @@ import {
   getMyCustomers, getMyCredits, settleMine,getCreditCustomers, getCreditCustomer, settleCreditCustomer,
 } from "../controllers/creditController.js";
 import { protect, authorize, sameBranch, requireOpenShift } from "../Middlewares/authMiddleware.js";
-import { validateSettleCredit, validateSettleMine, getCreditCustomers } from "../Middlewares/validators/creditValidators.js";
+import { validateSettleCredit, validateSettleMine } from "../Middlewares/validators/creditValidators.js";
 import { validate } from "../Middlewares/validate.js";
 
 const router = express.Router();
