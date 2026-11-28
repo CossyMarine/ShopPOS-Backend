@@ -501,3 +501,154 @@ export const settleCredit = async (req, res, next) => {
     credit: record,
   });
 };
+// ============================================================
+// ADMIN: customers who owe, grouped by branch + name
+// @route GET /api/credits/customers?branch=
+// ============================================================
+export const getCreditCustomers = async (req, res, next) => {
+  try {
+    const match = { status: { $in: ["open", "partial"] } };
+    if (req.query.branch) match.branch = new mongoose.Types.ObjectId(req.query.branch);
+
+    const now = new Date();
+    const owing = { $subtract: ["$amount", "$amountPaid"] };
+    const late = { $and: [{ $ne: ["$dueDate", null] }, { $lt: ["$dueDate", now] }] };
+
+    const rows = await CreditRecord.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: { branch: "$branch", key: { $toLower: { $trim: { input: "$customerName" } } } },
+          name: { $first: "$customerName" },
+          phone: { $max: "$customerPhone" }, // $max skips nulls
+          owing: { $sum: owing },
+          billCount: { $sum: 1 },
+          overdueAmount: { $sum: { $cond: [late, owing, 0] } },
+          overdueCount: { $sum: { $cond: [late, 1, 0] } },
+          oldestBillAt: { $min: "$createdAt" },
+          nextDue: { $min: "$dueDate" },
+        },
+      },
+      { $lookup: { from: "branches", localField: "_id.branch", foreignField: "_id", as: "b" } },
+      { $sort: { owing: -1 } },
+      { $limit: 300 },
+    ]);
+
+    res.json({
+      customers: rows.map((r) => ({
+        name: r.name,
+        phone: r.phone || null,
+        branchId: r._id.branch,
+        branchName: r.b?.[0]?.name || "—",
+        owing: round2(r.owing),
+        billCount: r.billCount,
+        overdueAmount: round2(r.overdueAmount),
+        overdueCount: r.overdueCount,
+        oldestBillAt: r.oldestBillAt,
+        nextDue: r.nextDue,
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ============================================================
+// ADMIN: one customer's open bills (oldest first)
+// @route GET /api/credits/customer?name=&branch=
+// ============================================================
+export const getCreditCustomer = async (req, res, next) => {
+  try {
+    const name = String(req.query.name || "").trim();
+    const { branch } = req.query;
+    if (!name || !branch) return res.status(400).json({ message: "Customer name and branch are required" });
+    assertBranchAccess(req, branch);
+
+    const credits = await CreditRecord.find({
+      branch,
+      status: { $in: ["open", "partial"] },
+      ...nameExpr(nameKey(name)),
+    })
+      .sort({ createdAt: 1 })
+      .populate("receipt", "billId items subtotal createdAt");
+
+    res.json({ credits });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ============================================================
+// ADMIN: pay one bill, or all of a customer's bills (oldest first)
+// @route POST /api/credits/customer/settle
+//   { branch, customerName, creditId?, payments: [{ method, amount, reference }] }
+// ============================================================
+export const settleCreditCustomer = async (req, res, next) => {
+  const { branch, creditId, customerName, payments } = req.body;
+  let session, settled = [], clearedCount = 0, remaining = 0;
+
+  try {
+    logStart("credit", "Admin credit settlement", { creditId, customerName });
+    assertBranchAccess(req, branch);
+
+    const filter = { branch, status: { $in: ["open", "partial"] }, ...nameExpr(nameKey(customerName)) };
+    if (creditId) filter._id = creditId;
+
+    session = await mongoose.startSession();
+    await session.withTransaction(async () => {
+      settled = [];
+      clearedCount = 0;
+
+      const records = await CreditRecord.find(filter).sort({ createdAt: 1 }).session(session);
+      if (!records.length) throw notFound("Credit record");
+
+      const owing = round2(records.reduce((s, r) => s + (r.amount - r.amountPaid), 0));
+      const paying = round2(payments.reduce((s, p) => s + Number(p.amount), 0));
+      if (!(paying > 0)) throw badRequest("Enter a valid amount");
+      if (paying > owing + 0.001) throw badRequest(`Amount exceeds the balance of KES ${owing}`);
+
+      const pool = payments.map((p) => ({
+        method: p.method,
+        amount: round2(p.amount),
+        reference: p.reference || null,
+      }));
+
+      for (const record of records) {
+        if (!pool.length) break;
+        const receipt = await Receipt.findById(record.receipt).session(session);
+        if (!receipt || receipt.status !== "credit") throw badRequest(`${record.billId} is no longer on credit`);
+
+        const chunks = takeFromPool(pool, record.amount - record.amountPaid);
+        if (!chunks.length) break;
+
+        const fullyPaid = await applySettlement({
+          record, receipt, chunks, user: req.user,
+          shiftId: req.shift?._id || null, // null for admin with no open shift (same as settleCredit)
+          session,
+        });
+        if (fullyPaid) clearedCount += 1;
+        settled.push({ record, receipt, fullyPaid });
+      }
+      remaining = round2(owing - paying);
+    });
+  } catch (error) {
+    if (session) await session.endSession();
+    return next(error);
+  }
+  await session.endSession();
+
+  const io = req.app.get("io");
+  for (const s of settled) {
+    io?.emit("receipt:updated", s.receipt);
+    if (s.fullyPaid) io?.emit("receipt:paid", s.receipt);
+    io?.emit("credit:updated", s.record);
+  }
+
+  logSuccess("credit", "Admin credit settlement recorded", { bills: settled.length, clearedCount });
+  res.json({
+    message: remaining <= 0.005 ? "Credit fully cleared" : "Part-payment recorded",
+    clearedCount,
+    billsTouched: settled.length,
+    remaining,
+  });
+};
