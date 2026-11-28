@@ -18,6 +18,9 @@ const lineSchema = new mongoose.Schema(
     gross:        Number,
     discount:     Number,
     net:          Number,
+    vatClass: { type: String, enum: ["standard", "zero", "exempt"], default: "standard" },
+    exVat:    Number,
+    vat:      Number,
     effCost:      Number,   // real landed cost per base unit
     discounts: [{ _id: false, type: {type :String}, val: Number, unit: String, unitName: String, amount: Number }],
     expiryDate:   Date,
